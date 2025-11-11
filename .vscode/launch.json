@@ -1,0 +1,27 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Bear Make",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "bear_make.py",
+            "console": "integratedTerminal",
+            "args": [
+                "make"
+            ]
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Test",
+            "program": "${workspaceFolder}/test_exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "bear_make"
+        }
+    ]
+}

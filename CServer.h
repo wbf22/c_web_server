@@ -678,6 +678,419 @@
 
 #endif
 
+#ifndef LIST
+#define LIST
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+
+/*
+    A list of elements of any type with the following operation complexities
+    - len(...) -> O(1)
+    - l_push(...) -> O(1) amoritized
+    - l_push_front(...) -> O(1) amoritized
+    - l_pop(...) -> O(1)
+    - l_pop_front(...) -> O(1)
+    - l_get(...) -> O(1)
+    - l_set(...) -> O(1)
+    - l_clear() -> O(n)
+    - free_list() -> O(n)
+    - l_slice() -> O(n)
+
+
+    This list implementation stores pointers to objects inserted by the user. These
+    object can be on the stack or the heap. Object will NOT be cleaned up with
+    free_list(), only the list's meta data is freed. 
+
+    When done with your list you must call free_list() to avoid memory leaks.
+
+    To update an index in the list do something like this:
+    ```
+    *(int*) l_get(list, 0) = 14;
+    ```
+
+    or this
+    ```
+    int data = 12;
+    l_set(list, 0, &data, sizeof(int));
+    ```
+
+
+    Take care inserting objects on the stack. If those objects go out of scope or the objects
+    are overwritten in a loop or something, the list will behave unexpectedly. 
+
+    For example this
+    ```
+
+    List* list = new_list();
+    for (int i = 0; i < 10; i++) {
+        l_push(list, &i);
+    }
+    for(int i = 0; i < list->len; ++i) {
+        int ele = *(int*) l_get(list, i);
+        printf("%d, ", ele);
+    }
+    free_list(list);
+    ```
+
+    outputs:
+    ```
+    10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 
+    ```
+
+    To insert one through 9 you'd have to do this:
+    ```
+
+    List* list = new_list();
+    for (int i = 0; i < 10; i++) {
+        int* d = malloc(sizeof(int));
+        *d = i;
+        l_push(list, &d);
+    }
+    for(int i = 0; i < list->len; ++i) {
+        int* ele = (int*) l_get(list, i);
+        printf("%d, ", *ele);
+        free(ele);
+    }
+    free_list(list);
+    ```
+
+*/
+typedef struct List {
+    void** data; // pointer to array of pointers
+    size_t data_size;
+
+    size_t start;
+    size_t end;
+    size_t len;
+} List;
+
+
+
+static void list_mem_error_exit_failing() {
+    fprintf(stderr, "List couldn't get more memory on the system! Exiting...");
+    exit(EXIT_FAILURE);
+}
+
+
+List* new_list_s(size_t size) {
+    List *p_list = malloc(sizeof(List));
+    if (p_list == NULL) {
+        list_mem_error_exit_failing();
+    }
+    p_list->data = malloc(size * sizeof(void*));
+    if (p_list->data == NULL) {
+        free(p_list);
+        list_mem_error_exit_failing();
+    }
+    p_list->data_size = size;
+    p_list->start = 0;
+    p_list->end = 0;
+    p_list->len = 0;
+
+    return p_list;
+}
+
+List* new_list() {
+    return new_list_s(10);
+}
+
+
+
+/*
+    doubles the internal array of the list
+
+    returns 0 if successful
+*/
+int resize(List* list) {
+
+    /*
+        int size = size();
+        T[] newData = (T[]) new Object[data.length * 2];
+        if (startIndex > endIndex) {
+            int startSize = this.data.length - startIndex;
+            System.arraycopy(this.data, startIndex, newData, 0, startSize);
+            System.arraycopy(this.data, 0, newData, startSize, endIndex);
+        }
+        else if (startIndex == endIndex) {
+            // do nothing empty array
+        }
+        else {
+            System.arraycopy(this.data, startIndex, newData, 0, size);
+        }
+
+        data = newData;
+        startIndex = 0;
+        endIndex = size;
+    */
+
+    size_t new_size = list->data_size * 2;
+    void** new_data = malloc(new_size * sizeof(void*));
+    if (new_data == NULL) {
+        list_mem_error_exit_failing();
+    }
+
+    if (list->start > list->end) {
+
+        // copy start index to array end
+        memcpy(
+            new_data, 
+            list->data + list->start, 
+            (list->data_size - list->start) * sizeof(void*)
+        );
+        // copy array start to end index
+        memcpy(
+            new_data + (list->data_size - list->start), 
+            list->data, 
+            list->end * sizeof(void*)
+        );
+    }
+    else {
+        memcpy(
+            new_data, 
+            list->data + list->start, 
+            (list->end - list->start) * sizeof(void*)
+        );
+    }
+
+    // freeing list but not contents
+    free(list->data);
+    list->data = new_data;
+    list->data_size = new_size;
+    list->start = 0;
+    list->end = list->len;
+
+
+    return 0;
+}
+
+
+
+
+/*
+    Function to s_add to the end of a list.
+    May resize interanl size of the list,
+    but amoritized is a constant operation.
+
+    A reference to either a stack or heap variable
+    can be passed in. This pointer will be stored 
+    in the list. If this data is freed or goes out
+    of scope, the list will be in a bad state.
+*/
+void l_push(List* list, void* data) {
+    
+    if (list->len == list->data_size - 1) {
+        resize(list);
+    }
+
+    list->data[list->end] = data;
+    list->end = (list->end + 1) % list->data_size;
+    list->len = list->len + 1;
+}
+
+/*
+    Function to s_add to the end of a list.
+    May resize interanl size of the list,
+    but amoritized is a constant operation.
+
+    A reference to either a stack or heap variable
+    can be passed in. This pointer will be stored 
+    in the list. If this data is freed or goes out
+    of scope, the list will be in a bad state.
+*/
+void l_push_front(List* list, void* data) {
+
+    if (list->len == list->data_size - 1) {
+        resize(list);
+    }
+
+    list->start = (list->start - 1 + list->data_size) % list->data_size;
+    list->data[list->start] = data;
+    list->len = list->len + 1;
+}
+
+/*
+    Removes and retrieves the last element of the list.
+
+    The data is returned in the form void* and should probably
+    be cast to the correct type:
+    ```
+    List* list = new_list();
+    int i = 10;
+    l_push(list, &i);
+    int ele = *(int*) l_pop(list);
+    ```
+*/
+void* l_pop(List* list) {
+
+    if (list->len == 0) {
+        return NULL;
+    }
+
+
+    list->end = (list->end - 1 + list->data_size) % list->data_size;
+    list->len = list->len - 1;
+    void* data = list->data[list->end];
+    list->data[list->end] = NULL;
+
+    return data;
+}
+
+/*
+    Removes and retrieves the first element of the list.
+
+    The data is returned in the form void* and should probably
+    be cast to the correct type:
+    ```
+    List* list = new_list();
+    int i = 10;
+    l_push(list, &i);
+    int ele = *(int*) l_pop(list);
+    ```
+*/
+void* l_pop_front(List* list) {
+
+    if (list->len == 0) {
+        return NULL;
+    }
+
+    void* data = list->data[list->start];
+    list->data[list->start] = NULL;
+    list->start = (list->start + 1) % list->data_size;
+    list->len = list->len - 1;
+
+    return data;
+}
+
+
+
+static int convert_index(List* list, int index) {
+
+
+    while (index < 0) {
+        index += list->len;
+    }
+
+    int in_bounds = index < list->len;
+    if (!in_bounds) {
+        fprintf(stderr, "Index ");
+        fprintf(stderr, "%d", index);
+        fprintf(stderr, " out of bounds for len ");
+        fprintf(stderr, "%d", list->len);
+        exit(EXIT_FAILURE);
+    }
+    
+    return (list->start + index) % list->data_size;
+}
+
+
+/*
+    Get's a pointer to a list element (so changes to pointer object
+    will change element on the list)
+*/
+void* l_get(List* list, int index) {
+    int real_index = convert_index(list, index);
+    return list->data[real_index];
+}
+
+/*
+    Replaces the pointer stored at the given index with 'data'.
+    No new memory is allocated; the pointer at that index is simply updated.
+*/
+void l_set(List* list, int index, void* data) {
+    int real_index = convert_index(list, index);
+    list->data[real_index] = data;
+}
+
+
+
+/*
+    Clears the list, and frees all objects on the heap if specified.
+*/
+void l_clear(List* list, int is_freeing_objects) {
+    // Free each pointer inside data
+    if (is_freeing_objects) {
+        for (size_t i = 0; i < list->len; i++) {
+            free(l_get(list, i));
+        }
+    }
+    list->len = 0;
+    list->start = 0;
+    list->end = 0;
+}
+
+/*
+    frees the list and stored objects if specified.
+*/
+void free_list(List* list, int is_freeing_objects) {
+    // Free data
+    l_clear(list, is_freeing_objects);
+    free(list->data);
+    // Free the struct itself
+    free(list);
+}
+
+
+/*
+    Makes a new list from the specified range (inclusive exclusive).
+    The resulting list will share objects with this list. (All objects
+    in the list are just pointers to your objects)
+*/
+List* l_slice(List* list, int start, int end) {
+    int real_start = convert_index(list, start);
+    int real_end = convert_index(list, end);
+    int new_len = 0;
+    if (real_start > real_end) {
+        new_len = list->data_size - real_start + real_end;
+    }
+    else {
+        new_len = real_end - real_start;
+    }
+
+    List* new_list = new_list_s(new_len * 2);
+
+    if (real_start > real_end) {
+
+        // copy start index to array end
+        memcpy(
+            new_list->data, 
+            list->data + real_start, 
+            (list->data_size - real_start) * sizeof(void*)
+        );
+        // copy array start to end index
+        memcpy(
+            new_list->data + (list->data_size - real_start), 
+            list->data, 
+            real_end * sizeof(void*)
+        );
+    }
+    else {
+        memcpy(
+            new_list->data, 
+            list->data + real_start, 
+            (real_end - real_start) * sizeof(void*)
+        );
+    }
+
+
+    new_list->start = 0;
+    new_list->end = new_len;
+    new_list->len = new_len;
+
+    return new_list;
+}
+
+
+void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
+    resize(list); // get list data all in a row
+    qsort(list->data, list->len, sizeof(void*),  __compar);
+}
+
+
+
+#endif
 
 #ifndef WINDOWS_INIT
 #define WINDOWS_INIT
@@ -765,6 +1178,8 @@
         tv.tv_usec = (timeout_ms % 1000) * 1000;
         setsockopt(n_socket->socket_num, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
         #endif
+
+        return n_socket;
     }
 
 
@@ -863,16 +1278,14 @@
         
         if (inet_pton(AF_INET, serverIP, &server.sin_addr) <= 0) {
             fprintf(stderr, "Invalid address/ Address not supported.\n");
-            return -1;
+            return;
         }
 
         // Connect to remote server
         if (connect(socket->socket_num, (struct sockaddr *)&server, sizeof(server)) != 0) {
             fprintf(stderr, "Connect error\n");
-            return -1;
+            return;
         }
-
-        return 0;
     }
 
     int tcp_send(SOCKET client_socket, const char *message, int message_length) {
@@ -1052,7 +1465,7 @@
      * 
      * Returns gathered client info and stores message in buffer
      */
-    struct sockaddr_in recieve(char *buffer, int read_size, int* bytes_read) {
+    struct sockaddr_in recieve(UDPSocket* sock, char *buffer, int read_size, int* bytes_read) {
             
         // make an empty client address
         struct sockaddr_in si_client;
@@ -1068,7 +1481,7 @@
     /**
      * Sends a message to a host
      */
-    int send(const char *message, const int length, const char* host, int port) {
+    int send_udp(UDPSocket* sock, const char *message, const int length, const char* host, int port) {
 
         #ifdef _WIN32
 
@@ -1123,25 +1536,474 @@
 
 
 
-#ifndef C_WEB_SERVER
-#define C_WEB_SERVER
+#ifndef C_SERVER
+#define C_SERVER
+
+
+    #include <pthread.h>
+    #include <time.h>
+
+    // ----------------------------
+    // Colors
+    // ----------------------------
+    #define RED      "\x1b[38;2;255;0;0m"
+    #define ORANGE   "\x1b[38;2;230;76;0m"
+    #define YELLOW   "\x1b[38;2;230;226;0m"
+    #define GREEN    "\x1b[38;2;0;186;40m"
+    #define BLUE     "\x1b[38;2;0;72;255m"
+    #define INDIGO   "\x1b[38;2;84;0;230m"
+    #define VIOLET   "\x1b[38;2;176;0;230m"
+    #define GREY   "\x1b[38;2;105;105;105m"
+    #define ANSI_RESET "\x1b[0m"
+
+
+    #define TRACE "TRACE"
+    #define DEBUG "DEBUG"
+    #define INFO "INFO"
+    #define WARN "WARN"
+    #define ERROR "ERROR"
+
+
+    char* log_file_path = NULL;
+
+
+    void log(char* message, char* level) {
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        char time_str[64];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+        char* color;
+        if (strcmp(level, TRACE)) color = YELLOW;
+        else if (strcmp(level, DEBUG)) color = GREEN;
+        else if (strcmp(level, INFO)) color = BLUE;
+        else if (strcmp(level, WARN)) color = ORANGE;
+        else if (strcmp(level, ERROR)) color = RED;
+
+        size_t size = strlen(color) + strlen(level) + strlen(time_str) + strlen(message) + 128;
+
+        char *entire_message = malloc(size);
+        if (!entire_message)
+            return;
+
+        /* Build formatted message */
+        printf(
+            "%s[%s]%s %s%s%s %s\n",
+            color,
+            level,
+            ANSI_RESET,
+            GREY,
+            time_str,
+            ANSI_RESET,
+            message
+        );
+
+        /* Write to file (without ANSI colors) */
+        FILE *file = fopen("app.log", "a");
+        if (file) {
+            fprintf(file, "[%s] %s %s\n", level, time_str, message);
+            fclose(file);
+        }
+
+        free(entire_message);
+
+
+    }
+    
+
+    typedef enum {
+         // 1xx Informational
+        HTTP_CONTINUE = 100,
+        HTTP_SWITCHING_PROTOCOLS = 101,
+        HTTP_PROCESSING = 102,
+
+        // 2xx Success
+        HTTP_OK = 200,
+        HTTP_CREATED = 201,
+        HTTP_ACCEPTED = 202,
+        HTTP_NON_AUTHORITATIVE_INFORMATION = 203,
+        HTTP_NO_CONTENT = 204,
+        HTTP_RESET_CONTENT = 205,
+        HTTP_PARTIAL_CONTENT = 206,
+
+        // 3xx Redirection
+        HTTP_MULTIPLE_CHOICES = 300,
+        HTTP_MOVED_PERMANENTLY = 301,
+        HTTP_FOUND = 302,
+        HTTP_SEE_OTHER = 303,
+        HTTP_NOT_MODIFIED = 304,
+        HTTP_USE_PROXY = 305,
+        HTTP_TEMPORARY_REDIRECT = 307,
+        HTTP_PERMANENT_REDIRECT = 308,
+
+        // 4xx Client Errors
+        HTTP_BAD_REQUEST = 400,
+        HTTP_UNAUTHORIZED = 401,
+        HTTP_PAYMENT_REQUIRED = 402,
+        HTTP_FORBIDDEN = 403,
+        HTTP_NOT_FOUND = 404,
+        HTTP_METHOD_NOT_ALLOWED = 405,
+        HTTP_NOT_ACCEPTABLE = 406,
+        HTTP_REQUEST_TIMEOUT = 408,
+        HTTP_CONFLICT = 409,
+        HTTP_GONE = 410,
+        HTTP_LENGTH_REQUIRED = 411,
+        HTTP_PRECONDITION_FAILED = 412,
+        HTTP_PAYLOAD_TOO_LARGE = 413,
+        HTTP_URI_TOO_LONG = 414,
+        HTTP_UNSUPPORTED_MEDIA_TYPE = 415,
+        HTTP_TOO_MANY_REQUESTS = 429,
+
+        // 5xx Server Errors
+        HTTP_INTERNAL_SERVER_ERROR = 500,
+        HTTP_NOT_IMPLEMENTED = 501,
+        HTTP_BAD_GATEWAY = 502,
+        HTTP_SERVICE_UNAVAILABLE = 503,
+        HTTP_GATEWAY_TIMEOUT = 504,
+        HTTP_HTTP_VERSION_NOT_SUPPORTED = 505
+    } HttpStatus;
 
     typedef struct {
+        struct sockaddr_in client;
+        SOCKET socket;
+    } OpenSocket;
+
+    typedef struct {
+        Map* headers;
+        char* body;
+        int content_length;
+    } Request;
+
+    typedef struct {
+        HttpStatus status;
+        char* message;
+        Map* headers;
+        char* body;
+        int content_length;
+    } Response;
+
+
+    typedef struct {
+        Map* ip_address_to_requests_in_window;
+        int rate_limit_window_s;
+        int requests_per_window;
+        uint64_t last_reset_s;
+
+    } DefaultSecurityData;
+
+
+    typedef struct CServer CServer;
+    typedef struct CServer {
+
+        // sockets
         TCPSocket* tcp_socket;
         UDPSocket* udp_socket;
-    } CWebServer;
 
-    CWebServer* cweb_start(int port, int timeout_ms) {
+        // server setting
+        int port;
+        int timeout_ms; 
+        int max_request_size_mb; 
+        int num_threads;
+        Response (*handler_function)(char* method, Map* headers, char* path, char* body);
+
+        // thread handling
+        pthread_t *socket_thread;
+        pthread_t *threads;
+        pthread_mutex_t lock;
+        pthread_cond_t notify;
+        int shutdown;
+        List* requests;
+
+        // security 
+        void* security_data;
+        int (*rate_limiter)(char* ip_address, int port, CServer* c_server);
+
+
+    } CServer;
+
+
+    void c_server_free(CServer* server) {
+        if (server->tcp_socket != NULL)
+            tcp_clean_up_socket(server->tcp_socket);
+        if (server->udp_socket != NULL)
+            udp_clean_up_socket(server->tcp_socket);
+
+        free(server->socket_thread);
+        for (int i = 0; i < server->num_threads; i++) {
+            free(server->threads[i]);
+        }
+        free(server->threads);
+
+        free_list(server->requests, 1);
+    }
+
+    static int defualt_rate_limiter(char* ip_address, int port, CServer* server) {
+        DefaultSecurityData* sec_data = (Map*) server->security_data;
+        
+        // update counts
+        int* count;
+        if(m_contains(sec_data->ip_address_to_requests_in_window, ip_address)) {
+            count = m_get(sec_data->ip_address_to_requests_in_window, ip_address);
+            *count++;
+            m_put(sec_data->ip_address_to_requests_in_window, ip_address, count, sizeof(int));
+        }
+        else {
+            count = malloc(sizeof(int));
+            *count = 1;
+            m_put(sec_data->ip_address_to_requests_in_window, ip_address, count, sizeof(int));
+        }
+        
+        // reset window when time
+        time_t sec = time(NULL);
+        if (sec - sec_data->last_reset_s > sec_data->rate_limit_window_s) {
+            free_map(sec_data->ip_address_to_requests_in_window, 1);
+            sec_data->ip_address_to_requests_in_window = new_map();
+            sec_data->last_reset_s = sec;
+        }
+        
+        // return error if ip has hit threshold
+        if (*count > sec_data->requests_per_window) {
+            return -1;
+        }
+        
+
+        return 0;
+    }
+
+    static void *socket_thread_func(void *arg) {
+        CServer *server = (CServer *)arg;
+        server->tcp_socket = tcp_make_socket(server->timeout_ms);
+        tcp_server_init(server->tcp_socket, server->port);
+        
+        int buffer_len = server->max_request_size_mb * 1000;
+        char* buffer = malloc(sizeof(char) * buffer_len);
+        while(!server->shutdown) {
+
+            // accept connection
+            OpenSocket* request = malloc(sizeof(OpenSocket));
+            request->socket = tcp_accept_connection(server->tcp_socket, &request->client);
+            if (request->socket == -1) continue;
+
+            // submit to workers
+            pthread_mutex_lock(&server->lock);
+            if (server->shutdown) {
+                pthread_mutex_unlock(&server->lock);
+                free(request);
+                break;
+            }
+            l_push(server->requests, request);
+            pthread_cond_signal(&server->notify);
+            pthread_mutex_unlock(&server->lock);
+        }
 
     }
 
-    CWebServer* cweb_start_udp(int port, int timeout_ms) {
+    static char *trim(char *s) {
+        while (*s == ' ' || *s == '\t') s++;
+        char *end = s + strlen(s) - 1;
+        while (end > s && (*end == ' ' || *end == '\t')) *end-- = '\0';
+        return s;
+    }
+
+    static void *worker_thread(void *arg) {
+        CServer *server = (CServer *)arg;
+
+
+        while (1) {
+
+            
+            // acquire lock and get request off queue
+            pthread_mutex_lock(&server->lock);
+            while (server->requests->len == 0 && !server->shutdown) {
+                pthread_cond_wait(&server->notify, &server->lock);
+            }
+            if (server->shutdown) {
+                pthread_mutex_unlock(&server->lock);
+                log("-- Thread shutting down", DEBUG);
+                pthread_exit(NULL);
+            }
+            OpenSocket* request = NULL;
+            if (server->requests->len > 0) {
+                request = (OpenSocket*) l_pop_front(server->requests);
+            }
+            pthread_mutex_unlock(&server->lock);
+            if (request == NULL) continue;
+
+
+            // get ip address and port
+            char ip_address[INET6_ADDRSTRLEN];
+            if (request->client.sin_family == AF_INET) {
+                inet_ntop(AF_INET, &((struct sockaddr_in *)&request->client)->sin_addr, ip_address, sizeof(ip_address));
+            } else if (request->client.sin_family == AF_INET6) {
+                inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&request->client)->sin6_addr, ip_address, sizeof(ip_address));
+            }
+            int port = ntohs(request->client.sin_port);
+
+
+            // rate limit based on ip
+            int should_limit = server->rate_limiter(ip_address, port, server);
+            if (should_limit) {
+                goto close_connection;
+            }
+
+
+            // read message
+            Map *headers = new_map();
+            char *path = malloc(sizeof(char)*1024);
+            char *body = malloc(sizeof(char));
+            int buffer_len = server->max_request_size_mb * 1000;
+            char* buffer = malloc(sizeof(char) * buffer_len);
+            int bytes_recieved = tcp_receive(server->tcp_socket, request->socket, buffer, buffer_len);
+            if (bytes_recieved == buffer_len) {
+
+                char message[1024];
+                snprintf(message, 1024, "Message exceeded max request size of %dmb", server->max_request_size_mb);
+                log(message, ERROR);
+                goto cleanup;
+            }
+
+
+            // PARSE REQUEST
+
+
+            /* 1. Find header/body boundary */
+            char *headers_end = strstr(buffer, "\r\n\r\n");
+            if (!headers_end) continue;
+
+            *headers_end = '\0';
+            char *body_start = headers_end + 4;
+
+            /* 2. Parse request line */
+            char *line_end = strstr(buffer, "\r\n");
+            if (!line_end) continue;
+            *line_end = '\0';
+
+            char method[8], version[16];
+            sscanf(buffer, "%7s %1023s %15s", method, path, version);
+
+            /* 3. Parse headers */
+
+            char *line = line_end + 2;
+            while (line && *line) {
+                char *next = strstr(line, "\r\n");
+                if (next) *next = '\0';
+
+                char *colon = strchr(line, ':');
+                if (colon) {
+                    *colon = '\0';
+                    char *key = trim(line);
+                    char *value = trim(colon + 1);
+                    m_put(headers, key, value, strlen(value)+1);
+                }
+
+                if (!next) break;
+                line = next + 2;
+            }
+
+            /* 4. Parse body */
+            char *content_length = m_get(headers, "Content-Length");
+            if (content_length) {
+                int len = atoi(content_length);
+                body = malloc(len + 1);
+                memcpy(body, body_start, len);
+                body[len] = '\0';
+            }
+
+
+
+            // CALL USER DEFINED HANDLER
+            Response response = server->handler_function(method, headers, path, body);
+            tcp_send(server->tcp_socket->socket_num, )
+
+
+            
+            cleanup:
+                free_map(headers, 0);
+                free(path);
+                free(body);
+                free(buffer);
+            close_connection:
+                tcp_close_connection(request->socket);
+                free(request);
+        }
+    }
+    
+
+
+    CServer* c_server_start_tcp_options(
+        int port, 
+        int timeout_ms, 
+        int max_request_size_mb, 
+        int threads, 
+        Response (*handler_function)(char* method, Map* headers, char* path, char* body),
+        int (*rate_limiter)(char* ip_address, int port, CServer* server),
+        void* security_data
+    ) {
+        CServer* server = malloc(sizeof(CServer));
+        server->udp_socket = NULL;
+        server->port = port;
+        server->timeout_ms = timeout_ms;
+        server->max_request_size_mb = max_request_size_mb;
+        server->num_threads = threads;
+        server->security_data = security_data;
+        server->rate_limiter = rate_limiter;
+        server->handler_function = handler_function;
+        server->shutdown = 0;
+        server->requests = new_list();
+
+        server->threads = malloc(sizeof(pthread_t) * threads);
+
+
+        // start socket
+        pthread_create(&server->socket_thread, NULL, socket_thread_func, server);
+
+        // start workers
+        for (int i = 0; i < threads; i++) {
+            pthread_create(&server->threads[i], NULL, worker_thread, server);
+        }
+
+
+        return server;
+    }
+
+    CServer* c_server_start_tcp(int port, Response (*handler_function)(char* method, Map* headers, char* path, char* body)) {
+
+        DefaultSecurityData* sec_data = malloc(sizeof(DefaultSecurityData));
+        sec_data->ip_address_to_requests_in_window = new_map();
+        sec_data->rate_limit_window_s = 1 * 60 * 1000;
+        sec_data->requests_per_window = 50;
+
+        return c_server_start_tcp_options(
+            port,
+            30000,
+            50,
+            8,
+            handler_function,
+            defualt_rate_limiter,
+            sec_data
+        );
+    }
+
+    CServer* cweb_start_udp(int port, int timeout_ms, int max_request_size_mb, int threads, Response (*handler_function)(char* method, Map* headers, char* path, char* body)) {
 
     }
 
-    void cweb_clean_up() {
 
+    void c_server_stop(CServer* server) {
+        pthread_mutex_lock(&server->lock);
+        server->shutdown = 1;
+        pthread_cond_broadcast(&server->notify);
+        pthread_mutex_unlock(&server->lock);
+
+        for (int i = 0; i < server->num_threads; i++) {
+            pthread_join(server->threads[i], NULL);
+        }
+        pthread_join(server->socket_thread, NULL);
+
+        pthread_mutex_destroy(&server->lock);
+        pthread_cond_destroy(&server->notify);
     }
+
 
 #endif
 

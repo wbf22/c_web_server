@@ -29,7 +29,7 @@ void assert(int condition, char* message) {
 
 
 
-Response handler_function(char* method, Map* headers, char* path, char* body) {
+Response handler_function(char* method, HttpHeader* headers, int num_headers, char* path, char* body) {
 
 
     char* res_body = "hi man";
@@ -38,6 +38,7 @@ Response handler_function(char* method, Map* headers, char* path, char* body) {
         HTTP_OK,
         "",
         NULL,
+        0,
         res_body,
         strlen(res_body)+1
     };

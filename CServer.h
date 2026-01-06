@@ -1,680 +1,680 @@
 #ifndef MAP
 #define MAP
 
-    #include <stdlib.h>
-    #include <stdio.h>
-    #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
-    typedef struct Element {
-        char* key;
-        size_t key_size;
-        void* data;
-    } Element;
+typedef struct Element {
+    char* key;
+    size_t key_size;
+    void* data;
+} Element;
 
-    /*
-        An unordered hash map implementation.
+/*
+    An unordered hash map implementation.
 
-        Used like so:
-        ```
-        
-        typedef struct MyStruct {
-            int x;
-            int y;
-        } MyStruct;
+    Used like so:
+    ```
+    
+    typedef struct MyStruct {
+        int x;
+        int y;
+    } MyStruct;
 
-        // insert into map
-        Map* map = new_map();
-        MyStruct object = {1, 3};
-        m_unique(map, "my_key", &object);
+    // insert into map
+    Map* map = new_map();
+    MyStruct object = {1, 3};
+    m_unique(map, "my_key", &object);
 
-        // update an element (2 ways)
-        MyStruct* back_out = (MyStruct*) m_get(map, "my_key");
-        back_out->y = 14;
-        back_out = (MyStruct*) m_get(map, "my_key");
-        printf("{%d,%d}\n",back_out->x, back_out->y);
+    // update an element (2 ways)
+    MyStruct* back_out = (MyStruct*) m_get(map, "my_key");
+    back_out->y = 14;
+    back_out = (MyStruct*) m_get(map, "my_key");
+    printf("{%d,%d}\n",back_out->x, back_out->y);
 
-        MyStruct replacement = {10, 33};
-        m_put(map, "my_key", &replacement, sizeof(replacement));
-        back_out = (MyStruct*) m_get(map, "my_key");
-        printf("{%d,%d}\n",back_out->x, back_out->y);
+    MyStruct replacement = {10, 33};
+    m_put(map, "my_key", &replacement, sizeof(replacement));
+    back_out = (MyStruct*) m_get(map, "my_key");
+    printf("{%d,%d}\n",back_out->x, back_out->y);
 
-        // remove element
-        m_erase(map, "my_key");
+    // remove element
+    m_erase(map, "my_key");
 
-        // get map length
-        printf("%d\n", map->len);
+    // get map length
+    printf("%d\n", map->len);
 
-        // iterate over map elements
-        for (int i = 0; i < 2; i++) {
-            MyStruct* new_object = malloc(sizeof(MyStruct));
-            new_object->x = 1 + i;
-            new_object->y = 3 + i;
+    // iterate over map elements
+    for (int i = 0; i < 2; i++) {
+        MyStruct* new_object = malloc(sizeof(MyStruct));
+        new_object->x = 1 + i;
+        new_object->y = 3 + i;
 
-            char key[5];
-            make_key(&i, sizeof(int), key, 5);
-            m_unique(map, key, new_object);
-        }
-
-        Element** items = map_elements(map);
-        for (int i = 0; i < map->len; ++i) {
-            Element* item = items[i];
-            char* key = item->key;
-            MyStruct obj = *(MyStruct*) item->data;
-
-            printf("%s{%d,%d}\n", key, obj.x, obj.y);
-        }
-
-        // clean up
-        for (int i = 0; i < map->len; ++i) {
-            Element* item = items[i];
-            MyStruct* obj = (MyStruct*) item->data;
-            free(obj);
-        }
-        free(items); // map_elements allocates memory for the 'items' array
-        free_map(map);
-
-
-        ```
-
-        The map does not free any items placed in it, so if you create
-        objects on the heap and put them in the map, make sure to clean 
-        them up yourself after calling 'free_map' or after erasing the items
-        from the map.
-
-        You can mix heap and stack items in the map as well as mixing types
-        if you desire. 
-
-        The map returns NULL if a value is not in the map instead of exiting the program
-        or something.
-
-
-
-        # METHODS
-
-        Methods with their time complexity
-        - m_put() m_int_put() m_any_put() m_unique() m_int_unique() m_any_unique() -> O(1) amoritized
-        - m_get() m_int_get() m_any_get(() -> O(1) amoritized
-        - m_erase() m_int_m_erase() m_any_m_erase() -> O(1) amoritized
-        - free_map() -> O(n)
-        - clear_map() -> O(n)
-        - map_elements() -> O(n)
-        - m_contains() m_int_contains() m_any_contains() -> O(1) amoritized
-
-
-
-        # DESIGN
-        
-        The map uses a hash table (an array) with keys converted to indices
-        with a hash function. We use djb2's hash function for this. 
-
-        On hash collions we use probing with a double hash function to insert the element.
-        When the hash table is 70% full we do a resize, using the next prime table size
-        in a predefined primes list.
-
-
-
-    */
-    typedef struct Map {
-        Element** data; // pointer to array of pointers
-        size_t data_size;
-        size_t len;
-    } Map;
-
-    const char* DELETED_KEY = "<DELETED>";
-
-    const size_t PRIMES[] = {
-        127,
-        257,
-        509,
-        1021,
-        2053,
-        4099,
-        9311,
-        18253,
-        37633,
-        65713,
-        115249,
-        193939,
-        505447,
-        1062599,
-        2017963,
-        4393139,
-        6972593,
-        13466917,
-        30402457,
-        57885161,
-        99990001,
-        370248451,
-        492366587,
-        715827883,
-        6643838879,
-        8589935681,
-        32212254719,
-        51539607551, // 412 GB of 8 byte elements
-        
-        // just for fun probably
-        80630964769,
-        119327070011,
-        228204732751,
-        1171432692373,
-        1398341745571,
-        9809862296159,
-        15285151248481,
-        304250263527209,
-        1746860020068409,
-        10657331232548839,
-        790738119649411319,
-        2305843009213693951 // 18,446 PB of 8 byte elements, more than largest super computers have in ram
-    };
-
-    static void map_mem_error_exit_failing() {
-        fprintf(stderr, "Map couldn't get more memory on the system! Exiting...");
-        exit(EXIT_FAILURE);
+        char key[5];
+        make_key(&i, sizeof(int), key, 5);
+        m_unique(map, key, new_object);
     }
 
+    Element** items = map_elements(map);
+    for (int i = 0; i < map->len; ++i) {
+        Element* item = items[i];
+        char* key = item->key;
+        MyStruct obj = *(MyStruct*) item->data;
 
-    static Map* new_map_s(size_t size) {
-
-        Map *map = malloc(sizeof(Map));
-        if (map == NULL) {
-            map_mem_error_exit_failing();
-        }
-        map->data = malloc(size * sizeof(void*));
-        if (map->data == NULL) {
-            free(map);
-            map_mem_error_exit_failing();
-        }
-        map->data_size = size;
-        for (int i = 0; i < size; ++i) {
-            map->data[i] = NULL;
-        }
-        map->len = 0;
-
-        return map;
+        printf("%s{%d,%d}\n", key, obj.x, obj.y);
     }
 
-    /*
-        Creates an empty map
-    */
-    Map* new_map() {
-        return new_map_s(PRIMES[0]);
+    // clean up
+    for (int i = 0; i < map->len; ++i) {
+        Element* item = items[i];
+        MyStruct* obj = (MyStruct*) item->data;
+        free(obj);
+    }
+    free(items); // map_elements allocates memory for the 'items' array
+    free_map(map);
+
+
+    ```
+
+    The map does not free any items placed in it, so if you create
+    objects on the heap and put them in the map, make sure to clean 
+    them up yourself after calling 'free_map' or after erasing the items
+    from the map.
+
+    You can mix heap and stack items in the map as well as mixing types
+    if you desire. 
+
+    The map returns NULL if a value is not in the map instead of exiting the program
+    or something.
+
+
+
+    # METHODS
+
+    Methods with their time complexity
+    - m_put() m_int_put() m_any_put() m_unique() m_int_unique() m_any_unique() -> O(1) amoritized
+    - m_get() m_int_get() m_any_get(() -> O(1) amoritized
+    - m_erase() m_int_m_erase() m_any_m_erase() -> O(1) amoritized
+    - free_map() -> O(n)
+    - clear_map() -> O(n)
+    - map_elements() -> O(n)
+    - m_contains() m_int_contains() m_any_contains() -> O(1) amoritized
+
+
+
+    # DESIGN
+    
+    The map uses a hash table (an array) with keys converted to indices
+    with a hash function. We use djb2's hash function for this. 
+
+    On hash collions we use probing with a double hash function to insert the element.
+    When the hash table is 70% full we do a resize, using the next prime table size
+    in a predefined primes list.
+
+
+
+*/
+typedef struct Map {
+    Element** data; // pointer to array of pointers
+    size_t data_size;
+    size_t len;
+} Map;
+
+const char* DELETED_KEY = "<DELETED>";
+
+const size_t PRIMES[] = {
+    127,
+    257,
+    509,
+    1021,
+    2053,
+    4099,
+    9311,
+    18253,
+    37633,
+    65713,
+    115249,
+    193939,
+    505447,
+    1062599,
+    2017963,
+    4393139,
+    6972593,
+    13466917,
+    30402457,
+    57885161,
+    99990001,
+    370248451,
+    492366587,
+    715827883,
+    6643838879,
+    8589935681,
+    32212254719,
+    51539607551, // 412 GB of 8 byte elements
+    
+    // just for fun probably
+    80630964769,
+    119327070011,
+    228204732751,
+    1171432692373,
+    1398341745571,
+    9809862296159,
+    15285151248481,
+    304250263527209,
+    1746860020068409,
+    10657331232548839,
+    790738119649411319,
+    2305843009213693951 // 18,446 PB of 8 byte elements, more than largest super computers have in ram
+};
+
+static void map_mem_error_exit_failing() {
+    fprintf(stderr, "Map couldn't get more memory on the system! Exiting...");
+    exit(EXIT_FAILURE);
+}
+
+
+static Map* new_map_s(size_t size) {
+
+    Map *map = malloc(sizeof(Map));
+    if (map == NULL) {
+        map_mem_error_exit_failing();
+    }
+    map->data = malloc(size * sizeof(void*));
+    if (map->data == NULL) {
+        free(map);
+        map_mem_error_exit_failing();
+    }
+    map->data_size = size;
+    for (int i = 0; i < size; ++i) {
+        map->data[i] = NULL;
+    }
+    map->len = 0;
+
+    return map;
+}
+
+/*
+    Creates an empty map
+*/
+Map* new_map() {
+    return new_map_s(PRIMES[0]);
+}
+
+/*
+    Function to hash an object's data into a key. Not necessary for use with
+    this Map implementation, but can be handy. 
+
+    Use like so:
+    ```
+    typedef struct MyStruct {
+        int x;
+        int y;
+        float f;
+    } MyStruct;
+
+    MyStruct my_struct;
+    my_struct.x = 1;
+    my_struct.y = 2;
+    my_struct.f = 19;
+
+    char key[10]; 
+    make_key(&my_struct, sizeof(my_struct), key, 10);
+    printf("%s", key);
+    ```
+*/
+void make_key(void* object, size_t object_size, char* output, size_t output_len) {
+    unsigned char* bytes = (unsigned char*)object;
+    unsigned long hash = 5381; // Initialize with a prime number (DJB2's initial value)
+
+    // Process each byte
+    const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    for (size_t i = 0; i < output_len; i++) {
+        char byte = bytes[i % object_size];
+        hash = (hash << 5) + hash + byte + 1;
+        int index = hash % 36;
+        output[i] = charset[index];
     }
 
-    /*
-        Function to hash an object's data into a key. Not necessary for use with
-        this Map implementation, but can be handy. 
+    // null terminate
+    output[output_len-1] = '\0';
+}
 
-        Use like so:
-        ```
-        typedef struct MyStruct {
-            int x;
-            int y;
-            float f;
-        } MyStruct;
+static size_t hash(void* key, size_t key_size) {
+    unsigned char* bytes = (unsigned char*)key;
+    size_t hash = 5381;
 
-        MyStruct my_struct;
-        my_struct.x = 1;
-        my_struct.y = 2;
-        my_struct.f = 19;
+    for (size_t i = 0; i < key_size; i++)
+        hash = ((hash << 5) + hash) + bytes[i];
 
-        char key[10]; 
-        make_key(&my_struct, sizeof(my_struct), key, 10);
-        printf("%s", key);
-        ```
-    */
-    void make_key(void* object, size_t object_size, char* output, size_t output_len) {
-        unsigned char* bytes = (unsigned char*)object;
-        unsigned long hash = 5381; // Initialize with a prime number (DJB2's initial value)
+    return (size_t)hash;
+}
 
-        // Process each byte
-        const char charset[] = "abcdefghijklmnopqrstuvwxyz0123456789";
-        for (size_t i = 0; i < output_len; i++) {
-            char byte = bytes[i % object_size];
-            hash = (hash << 5) + hash + byte + 1;
-            int index = hash % 36;
-            output[i] = charset[index];
-        }
+static size_t hash3(int failures) {
+    size_t hash = 5381;
 
-        // null terminate
-        output[output_len-1] = '\0';
+    for (size_t i = 0; i < failures; i++)
+        hash = (hash * 131) + failures;
+
+    // not odd or zero
+    if (hash % 2 == 0) {
+        hash += 1;
     }
 
-    static size_t hash(void* key, size_t key_size) {
-        unsigned char* bytes = (unsigned char*)key;
-        size_t hash = 5381;
+    return (size_t)hash;
+}
 
-        for (size_t i = 0; i < key_size; i++)
-            hash = ((hash << 5) + hash) + bytes[i];
+static size_t probe(Map* map, void* key, size_t key_size, int* hash_collisions) {
+    size_t index = hash(key, key_size) % map->data_size;
+    size_t first_index = index;
 
-        return (size_t)hash;
+    int open_or_match = map->data[index] == NULL;
+    if (map->data[index] != NULL && map->data[index]->key_size == key_size) {
+        open_or_match = open_or_match || memcmp(map->data[index]->key, key, key_size) == 0;
     }
+    while (!open_or_match) {
+        ++(*hash_collisions);
+        index = (first_index + hash3(*hash_collisions)) % map->data_size;
 
-    static size_t hash3(int failures) {
-        size_t hash = 5381;
-
-        for (size_t i = 0; i < failures; i++)
-            hash = (hash * 131) + failures;
-
-        // not odd or zero
-        if (hash % 2 == 0) {
-            hash += 1;
-        }
-
-        return (size_t)hash;
-    }
-
-    static size_t probe(Map* map, void* key, size_t key_size, int* hash_collisions) {
-        size_t index = hash(key, key_size) % map->data_size;
-        size_t first_index = index;
-
-        int open_or_match = map->data[index] == NULL;
+        open_or_match = map->data[index] == NULL;
         if (map->data[index] != NULL && map->data[index]->key_size == key_size) {
             open_or_match = open_or_match || memcmp(map->data[index]->key, key, key_size) == 0;
         }
-        while (!open_or_match) {
-            ++(*hash_collisions);
-            index = (first_index + hash3(*hash_collisions)) % map->data_size;
+    }
 
-            open_or_match = map->data[index] == NULL;
-            if (map->data[index] != NULL && map->data[index]->key_size == key_size) {
-                open_or_match = open_or_match || memcmp(map->data[index]->key, key, key_size) == 0;
+    return index;
+}
+
+
+static void free_map_data(Map* map, int is_freeing_objects) {
+    for (size_t i = 0; i < map->data_size; ++i) {
+        if (map->data[i] != NULL) {
+            free( map->data[i]->key);
+            if (is_freeing_objects) {
+                free(map->data[i]->data);
             }
+            free( map->data[i]);
         }
-
-        return index;
     }
+    free(map->data);
+}
+
+/*
+    Used for freeing the maps meta data, freeing stored objects if specified.
+*/
+void free_map(Map* map, int is_freeing_objects) {
+    free_map_data(map, is_freeing_objects);
+    free(map);
+}
 
 
-    static void free_map_data(Map* map, int is_freeing_objects) {
-        for (size_t i = 0; i < map->data_size; ++i) {
-            if (map->data[i] != NULL) {
-                free( map->data[i]->key);
-                if (is_freeing_objects) {
-                    free(map->data[i]->data);
-                }
-                free( map->data[i]);
-            }
+static void insert_no_resize(Map* map, void* key, size_t key_size, void* data, size_t data_size) {
+    int hash_collisions = 0;
+    size_t index = probe(map, key, key_size, &hash_collisions);
+
+
+    // if new element
+    if (map->data[index] == NULL) {
+
+        // copy the key
+        char* key_copy = malloc(key_size);
+        if (key_copy == NULL) {
+            map_mem_error_exit_failing();
         }
-        free(map->data);
+        memcpy(key_copy, key, key_size);
+
+        // make a new element
+        Element *element = malloc(sizeof(Element));
+        if (element == NULL) {
+            map_mem_error_exit_failing();
+        }
+        element->key = key_copy;
+        element->key_size = key_size;
+        element->data = data;
+        map->data[index] = element;
+
+        ++map->len;
     }
-
-    /*
-        Used for freeing the maps meta data, freeing stored objects if specified.
-    */
-    void free_map(Map* map, int is_freeing_objects) {
-        free_map_data(map, is_freeing_objects);
-        free(map);
-    }
-
-
-    static void insert_no_resize(Map* map, void* key, size_t key_size, void* data, size_t data_size) {
-        int hash_collisions = 0;
-        size_t index = probe(map, key, key_size, &hash_collisions);
-
-
-        // if new element
-        if (map->data[index] == NULL) {
-
-            // copy the key
-            char* key_copy = malloc(key_size);
-            if (key_copy == NULL) {
-                map_mem_error_exit_failing();
-            }
-            memcpy(key_copy, key, key_size);
-
-            // make a new element
-            Element *element = malloc(sizeof(Element));
-            if (element == NULL) {
-                map_mem_error_exit_failing();
-            }
-            element->key = key_copy;
-            element->key_size = key_size;
-            element->data = data;
-            map->data[index] = element;
-
-            ++map->len;
+    else {
+        if (data_size != -1) {
+            memcpy(map->data[index]->data, data, data_size);
         }
         else {
-            if (data_size != -1) {
-                memcpy(map->data[index]->data, data, data_size);
-            }
-            else {
-                fprintf(stderr, "Element already exists. Aborting to avoid leaving an unfreed pointer. (use 'm_put()' to overwrite elements or simply retrieve and modify elements) Exiting...");
-                exit(EXIT_FAILURE);
-            }
-
+            fprintf(stderr, "Element already exists. Aborting to avoid leaving an unfreed pointer. (use 'm_put()' to overwrite elements or simply retrieve and modify elements) Exiting...");
+            exit(EXIT_FAILURE);
         }
-
 
     }
 
-    static void resize_map(Map* map) {
-        size_t NUM_PRIMES = sizeof(PRIMES) / sizeof(PRIMES[0]);
 
-        // get next table size
-        size_t new_table_size = PRIMES[0];
-        for (int i = 0; i < NUM_PRIMES; ++i) {
-            if (PRIMES[i] > map->data_size) {
-                new_table_size = PRIMES[i];
-                break;
+}
+
+static void resize_map(Map* map) {
+    size_t NUM_PRIMES = sizeof(PRIMES) / sizeof(PRIMES[0]);
+
+    // get next table size
+    size_t new_table_size = PRIMES[0];
+    for (int i = 0; i < NUM_PRIMES; ++i) {
+        if (PRIMES[i] > map->data_size) {
+            new_table_size = PRIMES[i];
+            break;
+        }
+    }
+
+    // make new table and insert each element
+    size_t DELETED_KEY_SIZE = strlen(DELETED_KEY) + 1;
+    Map* new_map = new_map_s(new_table_size);
+    for (size_t i = 0; i < map->data_size; ++i) {
+
+        // if an element insert into new map
+        if (map->data[i] != NULL) {
+
+            // check if deleted
+            int deleted = 0;
+            if (map->data[i]->key_size == DELETED_KEY_SIZE) {
+                if (strcmp(map->data[i]->key, DELETED_KEY) == 0) {
+                    deleted = 1;
+                }
+            }
+
+            // an element insert into map
+            if (!deleted) {
+                Element* element = map->data[i];
+                insert_no_resize(new_map, element->key, element->key_size, element->data, -1);
             }
         }
+    }
 
-        // make new table and insert each element
+    free_map_data(map, 0);
+    map->data = new_map->data;
+    map->data_size = new_map->data_size;
+    map->len = new_map->len;
+
+    new_map->data = NULL; // so it won't free the data array copied above
+    free(new_map);
+}
+
+
+/*
+    Function to insert an object in the map, with any other object used as the key.
+
+    This can be used like so:
+    ```
+    Map* map = new_map();
+    MyStruct key = {1, "hi"};
+    MyStruct2 object = {1, 3};
+
+    m_any_unique(map, &key, sizeof(key), &object);
+    ```
+    Does not allow overwriting existing elements, as this would leave an
+    unfreed pointer. 
+
+    Use the insert methods to overwrite object, or simply retrieve objects
+    and modify them.
+
+*/
+void m_any_unique(Map* map, void* key, size_t key_size, void* data) {
+
+    insert_no_resize(map, key, key_size, data, -1);
+
+    // resize if neeeded
+    if (map->data_size * 0.7 < map->len) {
+        resize_map(map);
+    }
+}
+
+/*
+    Function to insert an object in the map using an int as the key.
+    Does not allow overwriting existing elements, as this would leave an
+    unfreed pointer. 
+
+    Use the insert methods to overwrite object, or simply retrieve objects
+    and modify them.
+*/
+void m_int_unique(Map* map, int key, void* data) {
+    m_any_unique(map, &key, sizeof(int), data);
+}
+
+/*
+    Function to insert an object in the map using a string as they key.
+    Does not allow overwriting existing elements, as this would leave an
+    unfreed pointer. 
+
+    Use the insert methods to overwrite object, or simply retrieve objects
+    and modify them.
+*/
+void m_unique(Map* map, char* key, void* data) {
+    m_any_unique(map, key, (strlen(key) + 1) * sizeof(char), data);
+}
+
+
+/*
+    Function to insert an object in the map, with any other object used as the key.
+
+    This can be used like so:
+    ```
+    Map* map = new_map();
+    MyStruct key = {1, "hi"};
+    MyStruct2 object = {1, 3};
+
+    m_any_put(map, &key, sizeof(key), &object, sizeof(object));
+    ```
+
+*/
+void m_any_put(Map* map, void* key, size_t key_size, void* data, size_t data_size) {
+
+    insert_no_resize(map, key, key_size, data, data_size);
+
+    // resize if neeeded
+    if (map->data_size * 0.7 < map->len) {
+        resize_map(map);
+    }
+}
+
+/*
+    Function to insert an object in the map using an int as the key.
+*/
+void m_int_put(Map* map, int key, void* data, size_t data_size) {
+    m_any_put(map, &key, sizeof(int), data, data_size);
+}
+
+/*
+    Function to insert an object in the map using a string as the key.
+
+    The key is copied so the key passed in can be freed before the map
+    if needed. (the key copy is freed by the free_map() function)
+*/
+void m_put(Map* map, char* key, void* data, size_t data_size) {
+    m_any_put(map, key, (strlen(key) + 1) * sizeof(char), data, data_size);
+}
+
+
+/*
+    Function to get an object in the map, with any other object used as the key.
+
+    This can be used like so:
+    ```
+    Map* map = new_map();
+    MyStruct key = {1, "hi"};
+    MyStruct2 object = (MyStruct2*) m_any_get((map, &key, sizeof(key));
+    ```
+
+    Returns a NULL pointer if no object exists at the key
+*/
+void* m_any_get(Map* map, void* key, size_t key_size) {
+    int hash_collisions = 0;
+    size_t index = probe(map, key, key_size, &hash_collisions);
+    if(map->data[index] == NULL) {
+        return NULL;
+    }
+
+    return map->data[index]->data;
+}
+
+/*
+    Function to get an object in the map, using an int as the key
+    Returns a NULL pointer if no object exists at the key
+*/
+void* m_int_get(Map* map, int key) {
+    return m_any_get(map, &key, sizeof(key));
+}
+
+/*
+    Function to get an object in the map, using an string as the key
+    Returns a NULL pointer if no object exists at the key
+*/
+void* m_get(Map* map, char* key) {
+    return m_any_get(map, key, (strlen(key) + 1) * sizeof(char));
+}
+
+
+
+/*
+    Function to erase an object in the map, with any other object used as the key.
+
+    This can be used like so:
+    ```
+    Map* map = new_map();
+    MyStruct key = {1, "hi"};
+    m_any_m_erase(map, &key, sizeof(key));
+    ```
+
+    If the key doesn't exist nothing happens
+*/
+void* m_any_m_erase(Map* map, void* key, size_t key_size) {
+    int hash_collisions = 0;
+    size_t index = probe(map, key, key_size, &hash_collisions);
+
+    if (map->data[index] == NULL) {
+        return NULL;
+    }
+
+    void* data = map->data[index]->data;
+    Element* element = map->data[index];
+    free(element->key);
+    free(element);
+
+    if (hash_collisions != 0) {
+
+        // make deleted key
         size_t DELETED_KEY_SIZE = strlen(DELETED_KEY) + 1;
-        Map* new_map = new_map_s(new_table_size);
-        for (size_t i = 0; i < map->data_size; ++i) {
+        char deleted_key_copy[DELETED_KEY_SIZE];
+        strcpy(deleted_key_copy, DELETED_KEY);
 
-            // if an element insert into new map
-            if (map->data[i] != NULL) {
+        // set as deleted
+        map->data[index]->key = deleted_key_copy;
+        map->data[index]->key_size = DELETED_KEY_SIZE;
+        map->data[index]->data = NULL;
 
-                // check if deleted
-                int deleted = 0;
-                if (map->data[i]->key_size == DELETED_KEY_SIZE) {
-                    if (strcmp(map->data[i]->key, DELETED_KEY) == 0) {
-                        deleted = 1;
-                    }
-                }
-
-                // an element insert into map
-                if (!deleted) {
-                    Element* element = map->data[i];
-                    insert_no_resize(new_map, element->key, element->key_size, element->data, -1);
-                }
-            }
-        }
-
-        free_map_data(map, 0);
-        map->data = new_map->data;
-        map->data_size = new_map->data_size;
-        map->len = new_map->len;
-
-        new_map->data = NULL; // so it won't free the data array copied above
-        free(new_map);
+        --map->len;
+    }
+    else {
+        map->data[index] = NULL;
+        --map->len;
     }
 
+    return data;
+}
 
-    /*
-        Function to insert an object in the map, with any other object used as the key.
+/*
+    Function to erase an object in the map, using an int as the key.
 
-        This can be used like so:
-        ```
-        Map* map = new_map();
-        MyStruct key = {1, "hi"};
-        MyStruct2 object = {1, 3};
+    If the key doesn't exist nothing happens
+*/
+void* m_int_m_erase(Map* map, int key) {
+    return m_any_m_erase(map, &key, sizeof(key));
+}
 
-        m_any_unique(map, &key, sizeof(key), &object);
-        ```
-        Does not allow overwriting existing elements, as this would leave an
-        unfreed pointer. 
+/*
+    Function to erase an object in the map, using an string as the key.
 
-        Use the insert methods to overwrite object, or simply retrieve objects
-        and modify them.
-
-    */
-    void m_any_unique(Map* map, void* key, size_t key_size, void* data) {
-
-        insert_no_resize(map, key, key_size, data, -1);
-
-        // resize if neeeded
-        if (map->data_size * 0.7 < map->len) {
-            resize_map(map);
-        }
-    }
-
-    /*
-        Function to insert an object in the map using an int as the key.
-        Does not allow overwriting existing elements, as this would leave an
-        unfreed pointer. 
-
-        Use the insert methods to overwrite object, or simply retrieve objects
-        and modify them.
-    */
-    void m_int_unique(Map* map, int key, void* data) {
-        m_any_unique(map, &key, sizeof(int), data);
-    }
-
-    /*
-        Function to insert an object in the map using a string as they key.
-        Does not allow overwriting existing elements, as this would leave an
-        unfreed pointer. 
-
-        Use the insert methods to overwrite object, or simply retrieve objects
-        and modify them.
-    */
-    void m_unique(Map* map, char* key, void* data) {
-        m_any_unique(map, key, (strlen(key) + 1) * sizeof(char), data);
-    }
+    If the key doesn't exist nothing happens
+*/
+void* m_erase(Map* map, char* key) {
+    return m_any_m_erase(map, key, (strlen(key) + 1) * sizeof(char));
+}
 
 
-    /*
-        Function to insert an object in the map, with any other object used as the key.
+/*
+    Returns the elements in the map which are defined which
+    contain both a key and a data array. Useful for iterating
+    over map elements.
 
-        This can be used like so:
-        ```
-        Map* map = new_map();
-        MyStruct key = {1, "hi"};
-        MyStruct2 object = {1, 3};
+    These elements are only references to elements in the map.
+    They should not be deleted or the map will be in a broken
+    state. However, the array of elements must be cleaned up or
+    there will be memory leaks. (so free the array, not the elements)
+*/
+Element** map_elements(Map* map) {
+    Element** array = malloc(map->len * sizeof(Element));
 
-        m_any_put(map, &key, sizeof(key), &object, sizeof(object));
-        ```
-
-    */
-    void m_any_put(Map* map, void* key, size_t key_size, void* data, size_t data_size) {
-
-        insert_no_resize(map, key, key_size, data, data_size);
-
-        // resize if neeeded
-        if (map->data_size * 0.7 < map->len) {
-            resize_map(map);
-        }
-    }
-
-    /*
-        Function to insert an object in the map using an int as the key.
-    */
-    void m_int_put(Map* map, int key, void* data, size_t data_size) {
-        m_any_put(map, &key, sizeof(int), data, data_size);
-    }
-
-    /*
-        Function to insert an object in the map using a string as the key.
-
-        The key is copied so the key passed in can be freed before the map
-        if needed. (the key copy is freed by the free_map() function)
-    */
-    void m_put(Map* map, char* key, void* data, size_t data_size) {
-        m_any_put(map, key, (strlen(key) + 1) * sizeof(char), data, data_size);
-    }
-
-
-    /*
-        Function to get an object in the map, with any other object used as the key.
-
-        This can be used like so:
-        ```
-        Map* map = new_map();
-        MyStruct key = {1, "hi"};
-        MyStruct2 object = (MyStruct2*) m_any_get((map, &key, sizeof(key));
-        ```
-
-        Returns a NULL pointer if no object exists at the key
-    */
-    void* m_any_get(Map* map, void* key, size_t key_size) {
-        int hash_collisions = 0;
-        size_t index = probe(map, key, key_size, &hash_collisions);
-        if(map->data[index] == NULL) {
-            return NULL;
-        }
-
-        return map->data[index]->data;
-    }
-
-    /*
-        Function to get an object in the map, using an int as the key
-        Returns a NULL pointer if no object exists at the key
-    */
-    void* m_int_get(Map* map, int key) {
-        return m_any_get(map, &key, sizeof(key));
-    }
-
-    /*
-        Function to get an object in the map, using an string as the key
-        Returns a NULL pointer if no object exists at the key
-    */
-    void* m_get(Map* map, char* key) {
-        return m_any_get(map, key, (strlen(key) + 1) * sizeof(char));
-    }
-
-
-
-    /*
-        Function to erase an object in the map, with any other object used as the key.
-
-        This can be used like so:
-        ```
-        Map* map = new_map();
-        MyStruct key = {1, "hi"};
-        m_any_m_erase(map, &key, sizeof(key));
-        ```
-
-        If the key doesn't exist nothing happens
-    */
-    void* m_any_m_erase(Map* map, void* key, size_t key_size) {
-        int hash_collisions = 0;
-        size_t index = probe(map, key, key_size, &hash_collisions);
-
-        if (map->data[index] == NULL) {
-            return NULL;
-        }
-
-        void* data = map->data[index]->data;
-        Element* element = map->data[index];
-        free(element->key);
-        free(element);
-
-        if (hash_collisions != 0) {
-
-            // make deleted key
-            size_t DELETED_KEY_SIZE = strlen(DELETED_KEY) + 1;
-            char deleted_key_copy[DELETED_KEY_SIZE];
-            strcpy(deleted_key_copy, DELETED_KEY);
-
-            // set as deleted
-            map->data[index]->key = deleted_key_copy;
-            map->data[index]->key_size = DELETED_KEY_SIZE;
-            map->data[index]->data = NULL;
-
-            --map->len;
-        }
-        else {
-            map->data[index] = NULL;
-            --map->len;
-        }
-
-        return data;
-    }
-
-    /*
-        Function to erase an object in the map, using an int as the key.
-
-        If the key doesn't exist nothing happens
-    */
-    void* m_int_m_erase(Map* map, int key) {
-        return m_any_m_erase(map, &key, sizeof(key));
-    }
-
-    /*
-        Function to erase an object in the map, using an string as the key.
-
-        If the key doesn't exist nothing happens
-    */
-    void* m_erase(Map* map, char* key) {
-        return m_any_m_erase(map, key, (strlen(key) + 1) * sizeof(char));
-    }
-
-
-    /*
-        Returns the elements in the map which are defined which
-        contain both a key and a data array. Useful for iterating
-        over map elements.
-
-        These elements are only references to elements in the map.
-        They should not be deleted or the map will be in a broken
-        state. However, the array of elements must be cleaned up or
-        there will be memory leaks. (so free the array, not the elements)
-    */
-    Element** map_elements(Map* map) {
-        Element** array = malloc(map->len * sizeof(Element));
-
-        int l = 0;
-        size_t DELETED_KEY_SIZE = strlen(DELETED_KEY) + 1;
-        for (size_t i = 0; i < map->data_size; ++i) {
-            if (map->data[i] != NULL) {
-                
-                int deleted = 0;
-                if (map->data[i]->key_size == DELETED_KEY_SIZE) {
-                    if (strcmp(map->data[i]->key, DELETED_KEY) == 0) {
-                        deleted = 1;
-                    }
-                }
-
-                if(!deleted) {
-                    array[l] = map->data[i];
-                    ++l;
+    int l = 0;
+    size_t DELETED_KEY_SIZE = strlen(DELETED_KEY) + 1;
+    for (size_t i = 0; i < map->data_size; ++i) {
+        if (map->data[i] != NULL) {
+            
+            int deleted = 0;
+            if (map->data[i]->key_size == DELETED_KEY_SIZE) {
+                if (strcmp(map->data[i]->key, DELETED_KEY) == 0) {
+                    deleted = 1;
                 }
             }
+
+            if(!deleted) {
+                array[l] = map->data[i];
+                ++l;
+            }
         }
-
-        return array;
     }
 
+    return array;
+}
 
-    /**
-     * Clears the map, freeing stored objects if specified.
-     */
-    void clear_map(Map* map, int is_freeing_objects) {
-        free_map(map, is_freeing_objects);
-        map = new_map();
+
+/**
+ * Clears the map, freeing stored objects if specified.
+ */
+void clear_map(Map* map, int is_freeing_objects) {
+    free_map(map, is_freeing_objects);
+    map = new_map();
+}
+
+
+/*
+    Function to determine if an object is in the map, with any other object used as the key.
+
+    This can be used like so:
+    ```
+    Map* map = new_map();
+    MyStruct key = {1, "hi"};
+    if(m_any_contains(map, &key, sizeof(key))) {
+        printf("yay!");
+    }
+    ```
+*/
+int m_any_contains(Map* map, void* key, size_t key_size) {
+
+    int hash_collisions = 0;
+    size_t index = probe(map, key, key_size, &hash_collisions);
+    if (map->data[index] == NULL) {
+        return 0; 
     }
 
+    return 1;
+}
 
-    /*
-        Function to determine if an object is in the map, with any other object used as the key.
+/*
+    Function to determine if an object is in the map, with an int used as the key.
+*/
+int m_int_contains(Map* map, int key) {
+    return m_any_contains(map, &key, sizeof(key));
+}
 
-        This can be used like so:
-        ```
-        Map* map = new_map();
-        MyStruct key = {1, "hi"};
-        if(m_any_contains(map, &key, sizeof(key))) {
-            printf("yay!");
-        }
-        ```
-    */
-    int m_any_contains(Map* map, void* key, size_t key_size) {
-
-        int hash_collisions = 0;
-        size_t index = probe(map, key, key_size, &hash_collisions);
-        if (map->data[index] == NULL) {
-            return 0; 
-        }
-
-        return 1;
-    }
-
-    /*
-        Function to determine if an object is in the map, with an int used as the key.
-    */
-    int m_int_contains(Map* map, int key) {
-        return m_any_contains(map, &key, sizeof(key));
-    }
-
-    /*
-        Function to determine if an object is in the map, with an string used as the key.
-    */
-    int m_contains(Map* map, char* key) {
-        return m_any_contains(map, key, (strlen(key) + 1) * sizeof(char));
-    }
+/*
+    Function to determine if an object is in the map, with an string used as the key.
+*/
+int m_contains(Map* map, char* key) {
+    return m_any_contains(map, key, (strlen(key) + 1) * sizeof(char));
+}
 
 #endif
 
@@ -1209,10 +1209,11 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         // Bind
         // Retry binding until it succeeds
         while (1) {
-            printf("Port %d in use or being cleaned up. Retrying...\n", port);
             if (bind(socket->socket_num, (struct sockaddr *)&server, sizeof(server)) == 0) {
+                printf("Listening on port %d\n", port);
                 break; // Bind succeeded
             }
+            printf("Port %d in use or being cleaned up. Retrying...\n", port);
             sleep(5); // Wait for 5 seconds before retrying
         }
 
@@ -1663,13 +1664,83 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         HTTP_HTTP_VERSION_NOT_SUPPORTED = 505
     } HttpStatus;
 
+    const char* http_status_reason(HttpStatus status) {
+        switch (status) {
+
+            /* 1xx Informational */
+            case HTTP_CONTINUE:                        return "Continue";
+            case HTTP_SWITCHING_PROTOCOLS:             return "Switching Protocols";
+            case HTTP_PROCESSING:                      return "Processing";
+
+            /* 2xx Success */
+            case HTTP_OK:                              return "OK";
+            case HTTP_CREATED:                        return "Created";
+            case HTTP_ACCEPTED:                       return "Accepted";
+            case HTTP_NON_AUTHORITATIVE_INFORMATION:  return "Non-Authoritative Information";
+            case HTTP_NO_CONTENT:                     return "No Content";
+            case HTTP_RESET_CONTENT:                  return "Reset Content";
+            case HTTP_PARTIAL_CONTENT:                return "Partial Content";
+
+            /* 3xx Redirection */
+            case HTTP_MULTIPLE_CHOICES:                return "Multiple Choices";
+            case HTTP_MOVED_PERMANENTLY:               return "Moved Permanently";
+            case HTTP_FOUND:                           return "Found";
+            case HTTP_SEE_OTHER:                       return "See Other";
+            case HTTP_NOT_MODIFIED:                    return "Not Modified";
+            case HTTP_USE_PROXY:                      return "Use Proxy";
+            case HTTP_TEMPORARY_REDIRECT:              return "Temporary Redirect";
+            case HTTP_PERMANENT_REDIRECT:              return "Permanent Redirect";
+
+            /* 4xx Client Errors */
+            case HTTP_BAD_REQUEST:                     return "Bad Request";
+            case HTTP_UNAUTHORIZED:                    return "Unauthorized";
+            case HTTP_PAYMENT_REQUIRED:                return "Payment Required";
+            case HTTP_FORBIDDEN:                       return "Forbidden";
+            case HTTP_NOT_FOUND:                       return "Not Found";
+            case HTTP_METHOD_NOT_ALLOWED:              return "Method Not Allowed";
+            case HTTP_NOT_ACCEPTABLE:                  return "Not Acceptable";
+            case HTTP_REQUEST_TIMEOUT:                 return "Request Timeout";
+            case HTTP_CONFLICT:                        return "Conflict";
+            case HTTP_GONE:                            return "Gone";
+            case HTTP_LENGTH_REQUIRED:                 return "Length Required";
+            case HTTP_PRECONDITION_FAILED:             return "Precondition Failed";
+            case HTTP_PAYLOAD_TOO_LARGE:               return "Payload Too Large";
+            case HTTP_URI_TOO_LONG:                    return "URI Too Long";
+            case HTTP_UNSUPPORTED_MEDIA_TYPE:          return "Unsupported Media Type";
+            case HTTP_TOO_MANY_REQUESTS:               return "Too Many Requests";
+
+            /* 5xx Server Errors */
+            case HTTP_INTERNAL_SERVER_ERROR:            return "Internal Server Error";
+            case HTTP_NOT_IMPLEMENTED:                  return "Not Implemented";
+            case HTTP_BAD_GATEWAY:                      return "Bad Gateway";
+            case HTTP_SERVICE_UNAVAILABLE:              return "Service Unavailable";
+            case HTTP_GATEWAY_TIMEOUT:                  return "Gateway Timeout";
+            case HTTP_HTTP_VERSION_NOT_SUPPORTED:       return "HTTP Version Not Supported";
+
+            default:
+                return "Unknown Status";
+        }
+    }
+    
+    typedef struct {
+        void* data;  
+        int thread_id;
+        const char *name;
+    } ThreadWorkerData;
+
+    typedef struct {
+        char* key;
+        char* value;
+    } HttpHeader;
+
     typedef struct {
         struct sockaddr_in client;
         SOCKET socket;
     } OpenSocket;
 
     typedef struct {
-        Map* headers;
+        HttpHeader* headers;
+        int num_headers;
         char* body;
         int content_length;
     } Request;
@@ -1677,7 +1748,8 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
     typedef struct {
         HttpStatus status;
         char* message;
-        Map* headers;
+        HttpHeader* headers;
+        int num_headers;
         char* body;
         int content_length;
     } Response;
@@ -1704,7 +1776,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         int timeout_ms; 
         int max_request_size_mb; 
         int num_threads;
-        Response (*handler_function)(char* method, Map* headers, char* path, char* body);
+        Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body);
 
         // thread handling
         pthread_t *socket_thread;
@@ -1715,6 +1787,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         List* requests;
 
         // security 
+        pthread_mutex_t security_data_lock;
         void* security_data;
         int (*rate_limiter)(char* ip_address, int port, CServer* c_server);
 
@@ -1722,6 +1795,114 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
     } CServer;
 
 
+    // UTIL functions
+
+    /**
+     * Removes whitespace from the end of the string, returning the same string
+     */
+    static char *trim(char *s) {
+        while (*s == ' ' || *s == '\t') s++;
+        char *end = s + strlen(s) - 1;
+        while (end > s && (*end == ' ' || *end == '\t')) *end-- = '\0';
+        return s;
+    }
+
+    /**
+     * Makes a new string on the heap with the two provided strings. Flags are used to determine if input strings are freed.
+     */
+    static char* str_append(char* str, char* addition, int free_str, int free_addition) {
+        if (str == NULL || addition == NULL) {
+            return str; // or handle error
+        }
+
+        size_t len_str = strlen(str);
+        size_t len_add = strlen(addition);
+        
+        char* new_str = malloc(len_str + len_add + 1);
+
+
+        memcpy(new_str, str, len_str);
+        memcpy(new_str + len_str, addition, len_add+1); // +1 to copy null terminator
+
+        return new_str;
+    }
+
+
+    typedef struct {
+        void **data;
+        size_t length;
+        size_t capacity;
+    } ptr_array;
+
+    static int ptr_array_push(ptr_array *a, void *value) {
+        if (a->length >= a->capacity) {
+            size_t new_cap = a->capacity ? a->capacity * 2 : 8;
+            void **tmp = realloc(a->data, new_cap * sizeof(void *));
+            if (!tmp) return -1;
+            a->data = tmp;
+            a->capacity = new_cap;
+        }
+
+        a->data[a->length++] = value;
+        return 0;
+    }
+
+    static int free_ptr_array(ptr_array *a, int free_values) {
+        if (free_values) {
+            for (int i = 0; i < a->length; i++) {
+                free(a->data[i]);
+            }
+        }
+        free(a);
+    }
+
+    typedef struct {
+        char *data;
+        size_t len;
+        size_t cap;
+    } strbuf;
+
+    static int strbuf_init(strbuf *s, int intial_size) {
+        s->data = malloc(intial_size);
+        if (!s->data) return -1;
+        s->len = 0;
+        s->cap = intial_size;
+    }
+
+    static int strbuf_append(strbuf *s, const char *str) {
+        size_t n = strlen(str);
+
+        int needed = s->len + n + 1;
+        if (needed > s->cap) {
+            size_t new_cap = s->cap ? s->cap : 16;
+            while (new_cap < needed)
+                new_cap *= 2;
+            char *tmp = realloc(s->data, new_cap);
+            if (!tmp) return -1;
+            s->data = tmp;
+            s->cap = new_cap;
+        }
+
+        memcpy(s->data + s->len, str, n);
+        s->len += n;
+        s->data[s->len] = '\0';
+        
+        return 0;
+    }
+
+    static void free_headers(HttpHeader** headers, int num_headers) {
+        for (int i = 0; i < num_headers; i++) {
+            HttpHeader* header = headers[i];
+            free(header->key);
+            free(header->value);
+            free(header);
+        }
+        free(headers);
+    }
+
+
+
+    // MAIN server functions
     void c_server_free(CServer* server) {
         if (server->tcp_socket != NULL)
             tcp_clean_up_socket(server->tcp_socket);
@@ -1786,6 +1967,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
             // submit to workers
             pthread_mutex_lock(&server->lock);
+            printf("Main thread got lock\n");
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
                 free(request);
@@ -1798,24 +1980,17 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
     }
 
-    static char *trim(char *s) {
-        while (*s == ' ' || *s == '\t') s++;
-        char *end = s + strlen(s) - 1;
-        while (end > s && (*end == ' ' || *end == '\t')) *end-- = '\0';
-        return s;
-    }
-
     static void *worker_thread(void *arg) {
-        CServer *server = (CServer *)arg;
-
+        ThreadWorkerData *data = (ThreadWorkerData *)arg;
+        CServer *server = (CServer *)data->data;
 
         while (1) {
 
-            
-            // acquire lock and get request off queue
+            // ACQUIRE lock and get request off queue
             pthread_mutex_lock(&server->lock);
             while (server->requests->len == 0 && !server->shutdown) {
-                pthread_cond_wait(&server->notify, &server->lock);
+                int res = pthread_cond_wait(&server->notify, &server->lock);
+                // printf("%d\n", res);
             }
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
@@ -1832,30 +2007,38 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
             // get ip address and port
             char ip_address[INET6_ADDRSTRLEN];
-            if (request->client.sin_family == AF_INET) {
-                inet_ntop(AF_INET, &((struct sockaddr_in *)&request->client)->sin_addr, ip_address, sizeof(ip_address));
-            } else if (request->client.sin_family == AF_INET6) {
+            if (request->client.sin_family == AF_INET6) {
                 inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&request->client)->sin6_addr, ip_address, sizeof(ip_address));
+            } 
+            else {
+                inet_ntop(AF_INET, &((struct sockaddr_in *)&request->client)->sin_addr, ip_address, sizeof(ip_address));
             }
             int port = ntohs(request->client.sin_port);
 
 
-            // rate limit based on ip
+            // RATE limit based on ip
+            pthread_mutex_lock(&server->security_data_lock);
+            printf("Thread %d lock rate limit\n", data->thread_id);
             int should_limit = server->rate_limiter(ip_address, port, server);
+            printf("Thread %d unlock rate limit\n", data->thread_id);
+            pthread_mutex_unlock(&server->security_data_lock);
             if (should_limit) {
                 goto close_connection;
             }
 
 
-            // read message
-            Map *headers = new_map();
+            // READ message
+            ptr_array headers; 
+            headers.data = malloc(sizeof(HttpHeader) * 8);
+            headers.capacity = 8;
+            headers.length = 0;
+            int num_headers = 0;
             char *path = malloc(sizeof(char)*1024);
-            char *body = malloc(sizeof(char));
+            char *body = malloc(1);
             int buffer_len = server->max_request_size_mb * 1000;
             char* buffer = malloc(sizeof(char) * buffer_len);
             int bytes_recieved = tcp_receive(server->tcp_socket, request->socket, buffer, buffer_len);
             if (bytes_recieved == buffer_len) {
-
                 char message[1024];
                 snprintf(message, 1024, "Message exceeded max request size of %dmb", server->max_request_size_mb);
                 log(message, ERROR);
@@ -1864,7 +2047,6 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
 
             // PARSE REQUEST
-
 
             /* 1. Find header/body boundary */
             char *headers_end = strstr(buffer, "\r\n\r\n");
@@ -1882,7 +2064,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             sscanf(buffer, "%7s %1023s %15s", method, path, version);
 
             /* 3. Parse headers */
-
+            int content_length = 0;
             char *line = line_end + 2;
             while (line && *line) {
                 char *next = strstr(line, "\r\n");
@@ -1893,7 +2075,16 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
                     *colon = '\0';
                     char *key = trim(line);
                     char *value = trim(colon + 1);
-                    m_put(headers, key, value, strlen(value)+1);
+
+                    if (strcmp(key, "Content-Length")) {
+                        int len = atoi(value);
+                    }
+                    
+                    HttpHeader* header = malloc(sizeof(HttpHeader));
+                    header->key = strdup(key);
+                    header->value = strdup(value);
+                    ptr_array_push(&headers, header);
+                    ++num_headers;
                 }
 
                 if (!next) break;
@@ -1901,27 +2092,78 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             }
 
             /* 4. Parse body */
-            char *content_length = m_get(headers, "Content-Length");
+            if (!content_length) {
+                int header_length = body_start - buffer;
+                content_length = bytes_recieved - header_length;
+            }
             if (content_length) {
-                int len = atoi(content_length);
-                body = malloc(len + 1);
-                memcpy(body, body_start, len);
-                body[len] = '\0';
+                body = realloc(body, content_length + 1);
+                memcpy(body, body_start, content_length);
+                body[content_length] = '\0';
             }
 
 
 
             // CALL USER DEFINED HANDLER
-            Response response = server->handler_function(method, headers, path, body);
-            tcp_send(server->tcp_socket->socket_num, )
+            Response response = server->handler_function(method, headers.data, num_headers, path, body);
+            
+            
+            // CONVERT RESPONSE TO HTTP RESPONSE
+            strbuf buf;
+            strbuf_init(&buf, response.content_length + 4096);
+
+            /* Status line */
+            char status_line[1024];
+            snprintf(
+                status_line,
+                1024,
+                "HTTP/1.1 %d %s\r\n",
+                response.status,
+                http_status_reason(response.status)
+            );
+            strbuf_append(&buf, status_line);
 
 
+            /* Headers from map */
+            for (int i = 0; i < response.num_headers; i++) {
+                char* key = response.headers[i].key;
+                char* value = response.headers[i].value;
+
+                strbuf_append(&buf, key);
+                strbuf_append(&buf, ": ");
+                strbuf_append(&buf, value);
+                strbuf_append(&buf, "\r\n");
+            }
+
+            // content length
+            strbuf_append(&buf, "Content-Length: ");
+            char c_length[32];
+            snprintf(c_length, 32, "%d", response.content_length);
+            strbuf_append(&buf, c_length);
+            strbuf_append(&buf, "\r\n");
+
+            strbuf_append(&buf, "\r\n");
+
+
+            // add body
+            strbuf_append(&buf, response.body);
+
+
+
+            // SEND response
+            printf("Response: \n\n%s\n", buf.data);
+            tcp_send(request->socket, buf.data, buf.len);
+
+
+            repsonse_cleanup:
+                free(buf.data);
             
             cleanup:
-                free_map(headers, 0);
+                free_headers(headers.data, headers.length);
                 free(path);
                 free(body);
                 free(buffer);
+
             close_connection:
                 tcp_close_connection(request->socket);
                 free(request);
@@ -1935,7 +2177,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         int timeout_ms, 
         int max_request_size_mb, 
         int threads, 
-        Response (*handler_function)(char* method, Map* headers, char* path, char* body),
+        Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body),
         int (*rate_limiter)(char* ip_address, int port, CServer* server),
         void* security_data
     ) {
@@ -1953,20 +2195,28 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
         server->threads = malloc(sizeof(pthread_t) * threads);
 
+        // initialize mutexes
+        pthread_mutex_init(&server->lock, NULL);
+        pthread_cond_init(&server->notify, NULL);
+        pthread_mutex_init(&server->security_data_lock, NULL);
+
 
         // start socket
         pthread_create(&server->socket_thread, NULL, socket_thread_func, server);
 
         // start workers
         for (int i = 0; i < threads; i++) {
-            pthread_create(&server->threads[i], NULL, worker_thread, server);
+            ThreadWorkerData* data = malloc(sizeof(ThreadWorkerData));
+            data->data = server;
+            data->thread_id = i;
+            pthread_create(&server->threads[i], NULL, worker_thread, data);
         }
 
 
         return server;
     }
 
-    CServer* c_server_start_tcp(int port, Response (*handler_function)(char* method, Map* headers, char* path, char* body)) {
+    CServer* c_server_start_tcp(int port, Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
 
         DefaultSecurityData* sec_data = malloc(sizeof(DefaultSecurityData));
         sec_data->ip_address_to_requests_in_window = new_map();
@@ -1984,7 +2234,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         );
     }
 
-    CServer* cweb_start_udp(int port, int timeout_ms, int max_request_size_mb, int threads, Response (*handler_function)(char* method, Map* headers, char* path, char* body)) {
+    CServer* cweb_start_udp(int port, int timeout_ms, int max_request_size_mb, int threads, Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
 
     }
 

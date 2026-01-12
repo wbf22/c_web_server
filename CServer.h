@@ -1822,8 +1822,10 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         List* requests;
 
         // security 
-        pthread_mutex_t security_data_lock;
+        void* rate_limiter_data;
+        pthread_mutex_t rate_limiter_data_lock;
         void* security_data;
+        pthread_mutex_t security_data_lock;
         SecurityResult* (*rate_limiter)(char* ip_address, int port, void* security_data);
         SecurityResult* (*security_function)(char* ip_address, int port, char* method, HttpHeader* headers, int num_headers, char* path, void* security_data);
 
@@ -2145,9 +2147,9 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
             // RATE limit based on ip
             Response* response = malloc(sizeof(Response));
-            pthread_mutex_lock(&server->security_data_lock);
-            SecurityResult* result = server->rate_limiter(ip_address, port, server->security_data);
-            pthread_mutex_unlock(&server->security_data_lock);
+            pthread_mutex_lock(&server->rate_limiter_data_lock);
+            SecurityResult* result = server->rate_limiter(ip_address, port, server->rate_limiter_data);
+            pthread_mutex_unlock(&server->rate_limiter_data_lock);
             if (result->request_failed_security) {
                 free_response(response);
                 response = result->response;
@@ -2363,11 +2365,11 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
      * - limit requests to defined resources (especially with paths to files)
      * - max request size per resource
      * - timeout per resource
+     * Your security function will be run after rate limiting by ip address is passed and headers have been parsed. 
      * 
      * And then in your 'handler_function'
      * - content type validation (validate type and parse requests to prevent injection)
      * - escape or parameterize user input to prevent SQL, JS, or other injection attacks
-     * 
      * 
      * The server will provide the following security features:
      * - enforce max request and header/path sizes preventing DOS attacks if 'max_request_size_kb' and 'max_header_and_path_size_kb' is set well
@@ -2384,6 +2386,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         void (*handler_function)(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body),
         SecurityResult* (*rate_limiter)(char* ip_address, int port, void* security_data),
         SecurityResult* (*security_function)(char* ip_address, int port, char* method, HttpHeader* headers, int num_headers, char* path, void* security_data),
+        void* rate_limiter_data,
         void* security_data
     ) {
         CServer* server = malloc(sizeof(CServer));
@@ -2393,6 +2396,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         server->max_header_and_path_size_kb = max_header_and_path_size_kb;
         server->max_request_size_kb = max_request_size_kb;
         server->num_threads = threads;
+        server->rate_limiter_data = rate_limiter_data;
         server->security_data = security_data;
         server->rate_limiter = rate_limiter;
         server->security_function = security_function;
@@ -2406,7 +2410,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         pthread_mutex_init(&server->lock, NULL);
         pthread_cond_init(&server->notify, NULL);
         pthread_mutex_init(&server->security_data_lock, NULL);
-
+        pthread_mutex_init(&server->rate_limiter_data_lock, NULL);
 
         // start socket
         pthread_create(&server->socket_thread, NULL, socket_thread_func, server);
@@ -2418,7 +2422,6 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             data->thread_id = i;
             pthread_create(&server->threads[i], NULL, worker_thread, data);
         }
-
 
         return server;
     }
@@ -2437,11 +2440,40 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
      * - a max request size of 256 kb
      * - 8 worker threads
      * 
-     * For more customization user 'c_server_start_http_options'.
      * 
-     * *Note: security here is very basic. For important public servers, you should use 'c_server_start_http_options' and define security functions described there.
+     * You also provide the server with a security function that will be called after request headers have been parsed and before the body has been read.
+     * When called this function will recieve the provided 'security_data' pointer you pass in.
+     * 
+     * For any publicly available server, we recommend defining the security functions with the following features:
+     * - ip address rate limiting
+     * - session rate limiting (after login if applicable)
+     * - authorization on sensitive endpoints (session token, CSRF cookie)
+     *      + invalidate tokens after some time
+     *      + validate and parse cookies (if applicable)
+     *      + set matching CSRF token and cookie (HttpOnly, Secure, and SameSite) and check against each other (catches attackers tricking the browser to send login tokens for your site from another site)
+     * - limit requests to defined resources (especially with paths to files)
+     * - max request size per resource
+     * - timeout per resource
+     * Your security function will be run after rate limiting by ip address is passed and headers have been parsed. 
+     * 
+     * And then in your 'handler_function'
+     * - content type validation (validate type and parse requests to prevent injection)
+     * - escape or parameterize user input to prevent SQL, JS, or other injection attacks
+     * 
+     * The server will provide the following security features:
+     * - enforce max request and header/path sizes preventing DOS attacks if 'max_request_size_kb' and 'max_header_and_path_size_kb' is set well
+     * - prevent duplicate headers and headers with CR/LF tokens
+     * - enforce request timeouts
+     * - prevent malformed http requests
+     * 
+     * For more customization use 'c_server_start_http_options'.
      */
-    CServer* c_server_start_http(int port, void (*handler_function)(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
+    CServer* c_server_start_http(
+        int port, 
+        void (*handler_function)(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body),
+        SecurityResult* (*security_function)(char* ip_address, int port, char* method, HttpHeader* headers, int num_headers, char* path, void* security_data),
+        void* security_data
+    ) {
 
         DefaultSecurityData* sec_data = malloc(sizeof(DefaultSecurityData));
         sec_data->ip_address_to_requests_in_window = new_map();
@@ -2456,8 +2488,9 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             8,
             handler_function,
             defualt_rate_limiter,
-            default_security_function,
-            sec_data
+            security_function,
+            sec_data,
+            security_data
         );
     }
 
@@ -2471,6 +2504,8 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         server->shutdown = 1;
         pthread_cond_broadcast(&server->notify);
         pthread_mutex_unlock(&server->lock);
+        pthread_mutex_unlock(&server->security_data_lock);
+        pthread_mutex_unlock(&server->rate_limiter_data_lock);
 
         for (int i = 0; i < server->num_threads; i++) {
             pthread_join(server->threads[i], NULL);
@@ -2478,6 +2513,8 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         pthread_join(server->socket_thread, NULL);
 
         pthread_mutex_destroy(&server->lock);
+        pthread_mutex_destroy(&server->security_data_lock);
+        pthread_mutex_destroy(&server->rate_limiter_data_lock);
         pthread_cond_destroy(&server->notify);
 
         if (server->tcp_socket != NULL) {

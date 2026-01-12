@@ -48,9 +48,14 @@ Response handler_function(char* method, HttpHeader* headers, int num_headers, ch
 
 int main() {
 
-    CServer* server = c_server_start_tcp(8080, handler_function);
+    CServer* server = c_server_start_http(8080, handler_function);
 
-    sleep(1000*60*10);
+    unsigned int left = sleep(60 * 5);
+    while(left > 0) {
+        left = sleep(left);
+    }
+
+    c_server_stop(server);
     
     return 0;
 }

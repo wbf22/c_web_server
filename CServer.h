@@ -1543,6 +1543,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
     #include <pthread.h>
     #include <time.h>
+    #include <stdarg.h>
 
     // ----------------------------
     // Colors
@@ -1575,11 +1576,11 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
 
         char* color;
-        if (strcmp(level, TRACE)) color = YELLOW;
-        else if (strcmp(level, DEBUG)) color = GREEN;
-        else if (strcmp(level, INFO)) color = BLUE;
-        else if (strcmp(level, WARN)) color = ORANGE;
-        else if (strcmp(level, ERROR)) color = RED;
+        if (strcmp(level, TRACE) == 0) color = YELLOW;
+        else if (strcmp(level, DEBUG) == 0) color = GREEN;
+        else if (strcmp(level, INFO) == 0) color = BLUE;
+        else if (strcmp(level, WARN) == 0) color = ORANGE;
+        else if (strcmp(level, ERROR) == 0) color = RED;
 
         size_t size = strlen(color) + strlen(level) + strlen(time_str) + strlen(message) + 128;
 
@@ -1611,6 +1612,36 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
     }
     
+    void logf(char* level, char* message, ...) {
+
+        /* Format the message with the provided arguments */
+        va_list args1, args2;
+        va_start(args1, message);
+        va_copy(args2, args1);  // Copy for second use
+        
+        /* Calculate required buffer size */
+        int msg_len = vsnprintf(NULL, 0, message, args1);
+        va_end(args1);
+        
+        if (msg_len < 0) {
+            va_end(args2);
+            return;
+        }
+        
+        char *formatted_msg = malloc(msg_len + 1);
+        if (!formatted_msg) {
+            va_end(args2);
+            return;
+        }
+        
+        vsnprintf(formatted_msg, msg_len + 1, message, args2);
+        va_end(args2);
+        
+        log(formatted_msg, level);
+        
+        free(formatted_msg);
+    }
+
 
     typedef enum {
          // 1xx Informational
@@ -1925,7 +1956,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         int* count;
         if(m_contains(sec_data->ip_address_to_requests_in_window, ip_address)) {
             count = m_get(sec_data->ip_address_to_requests_in_window, ip_address);
-            *count++;
+            (*count)++;
             m_put(sec_data->ip_address_to_requests_in_window, ip_address, count, sizeof(int));
         }
         else {
@@ -1967,7 +1998,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
             // submit to workers
             pthread_mutex_lock(&server->lock);
-            printf("Main thread got lock\n");
+            // printf("Main thread got lock\n");
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
                 free(request);
@@ -1994,7 +2025,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             }
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
-                log("-- Thread shutting down", DEBUG);
+                logf(INFO, "-- Worker thread %d shutting down", data->thread_id);
                 pthread_exit(NULL);
             }
             OpenSocket* request = NULL;
@@ -2018,9 +2049,9 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
             // RATE limit based on ip
             pthread_mutex_lock(&server->security_data_lock);
-            printf("Thread %d lock rate limit\n", data->thread_id);
+            // printf("Thread %d lock rate limit\n", data->thread_id);
             int should_limit = server->rate_limiter(ip_address, port, server);
-            printf("Thread %d unlock rate limit\n", data->thread_id);
+            // printf("Thread %d unlock rate limit\n", data->thread_id);
             pthread_mutex_unlock(&server->security_data_lock);
             if (should_limit) {
                 goto close_connection;
@@ -2171,8 +2202,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
     }
     
 
-
-    CServer* c_server_start_tcp_options(
+    CServer* c_server_start_http_options(
         int port, 
         int timeout_ms, 
         int max_request_size_mb, 
@@ -2216,14 +2246,14 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         return server;
     }
 
-    CServer* c_server_start_tcp(int port, Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
+    CServer* c_server_start_http(int port, Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
 
         DefaultSecurityData* sec_data = malloc(sizeof(DefaultSecurityData));
         sec_data->ip_address_to_requests_in_window = new_map();
         sec_data->rate_limit_window_s = 1 * 60 * 1000;
-        sec_data->requests_per_window = 50;
+        sec_data->requests_per_window = 100;
 
-        return c_server_start_tcp_options(
+        return c_server_start_http_options(
             port,
             30000,
             50,
@@ -2252,6 +2282,13 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
         pthread_mutex_destroy(&server->lock);
         pthread_cond_destroy(&server->notify);
+
+        if (server->tcp_socket != NULL) {
+            tcp_clean_up_socket(server->tcp_socket);
+        }
+        if (server->udp_socket != NULL) {
+            udp_clean_up_socket(server->udp_socket);
+        }
     }
 
 

@@ -1335,7 +1335,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         return bytes_received;
     }
 
-    void tcp_close_connection(SOCKET client_socket) {
+    void tcp_send_and_close_connection(SOCKET client_socket) {
         #ifdef _WIN32
         closesocket(client_socket);
         #else
@@ -1565,11 +1565,12 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
     #define WARN "WARN"
     #define ERROR "ERROR"
 
+    #define C_SERVER_MIN_READ 1000
 
     char* log_file_path = NULL;
 
 
-    void log(char* message, char* level) {
+    void log(char* level, char* message) {
         time_t now = time(NULL);
         struct tm *tm_info = localtime(&now);
         char time_str[64];
@@ -1637,7 +1638,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         vsnprintf(formatted_msg, msg_len + 1, message, args2);
         va_end(args2);
         
-        log(formatted_msg, level);
+        log(level, formatted_msg);
         
         free(formatted_msg);
     }
@@ -1778,22 +1779,24 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
     typedef struct {
         HttpStatus status;
-        char* message;
         HttpHeader* headers;
         int num_headers;
         char* body;
         int content_length;
     } Response;
 
+    typedef struct {
+        int request_failed_security;
+        Response* response;
+    } SecurityResult;
 
     typedef struct {
         Map* ip_address_to_requests_in_window;
-        int rate_limit_window_s;
+        int rate_limit_window_ms;
         int requests_per_window;
         uint64_t last_reset_s;
-
+        void *other_data;
     } DefaultSecurityData;
-
 
     typedef struct CServer CServer;
     typedef struct CServer {
@@ -1805,9 +1808,10 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         // server setting
         int port;
         int timeout_ms; 
-        int max_request_size_mb; 
+        int max_header_and_path_size_kb; 
+        int max_request_size_kb; 
         int num_threads;
-        Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body);
+        void (*handler_function)(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body);
 
         // thread handling
         pthread_t *socket_thread;
@@ -1820,8 +1824,8 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         // security 
         pthread_mutex_t security_data_lock;
         void* security_data;
-        int (*rate_limiter)(char* ip_address, int port, CServer* c_server);
-
+        SecurityResult* (*rate_limiter)(char* ip_address, int port, void* security_data);
+        SecurityResult* (*security_function)(char* ip_address, int port, char* method, HttpHeader* headers, int num_headers, char* path, void* security_data);
 
     } CServer;
 
@@ -1931,6 +1935,23 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         free(headers);
     }
 
+    static void free_response(Response* response) {
+        if (response != NULL) {
+            if (response->body != NULL) {
+                free(response->body);
+            }
+            if (response->headers != NULL) {
+                free_headers(response->headers, response->num_headers);
+            }
+            free(response);
+        }
+    }
+
+    static void free_security_result(SecurityResult* result) {
+        free_response(result->response);
+        free(result);
+    }
+
 
 
     // MAIN server functions
@@ -1949,8 +1970,8 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         free_list(server->requests, 1);
     }
 
-    static int defualt_rate_limiter(char* ip_address, int port, CServer* server) {
-        DefaultSecurityData* sec_data = (Map*) server->security_data;
+    static SecurityResult* defualt_rate_limiter(char* ip_address, int port, void* security_data) {
+        DefaultSecurityData* sec_data = (DefaultSecurityData*) security_data;
         
         // update counts
         int* count;
@@ -1967,19 +1988,39 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         
         // reset window when time
         time_t sec = time(NULL);
-        if (sec - sec_data->last_reset_s > sec_data->rate_limit_window_s) {
+        if (sec - sec_data->last_reset_s > sec_data->rate_limit_window_ms) {
             free_map(sec_data->ip_address_to_requests_in_window, 1);
             sec_data->ip_address_to_requests_in_window = new_map();
             sec_data->last_reset_s = sec;
         }
         
         // return error if ip has hit threshold
+        SecurityResult* result = malloc(sizeof(SecurityResult));
+        result->request_failed_security = 0;
+        result->response = NULL;
         if (*count > sec_data->requests_per_window) {
-            return -1;
+
+            Response* res = malloc(sizeof(Response));
+            res->status = HTTP_TOO_MANY_REQUESTS;
+            res->headers = NULL;
+            res->num_headers = 0;
+            res->body = strdup("You have sent to many requests recently. Wait and try again later");
+
+            result->request_failed_security = 1;
+            result->response = res;
+            return result;
         }
         
+        return result;
+    }
 
-        return 0;
+    static SecurityResult* default_security_function(char* ip_address, int port, char* method, HttpHeader* headers, int num_headers, char* path, void* security_data) {
+        
+        SecurityResult* result = malloc(sizeof(SecurityResult));
+        result->request_failed_security = 0;
+        result->response = NULL;
+
+        return result;
     }
 
     static void *socket_thread_func(void *arg) {
@@ -1987,7 +2028,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         server->tcp_socket = tcp_make_socket(server->timeout_ms);
         tcp_server_init(server->tcp_socket, server->port);
         
-        int buffer_len = server->max_request_size_mb * 1000;
+        int buffer_len = server->max_request_size_kb * 1000;
         char* buffer = malloc(sizeof(char) * buffer_len);
         while(!server->shutdown) {
 
@@ -2011,9 +2052,64 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
     }
 
+    void send_response(CServer* server, OpenSocket* request, Response* response) {
+        strbuf buf;
+        strbuf_init(&buf, response->content_length + 4096);
+        if (response->body != NULL) {
+            response->content_length = strlen(response->body);
+        }
+        else {
+            response->content_length = 0;
+        }
+
+        /* Status line */
+        char status_line[1024];
+        snprintf(
+            status_line,
+            1024,
+            "HTTP/1.1 %d %s\r\n",
+            response->status,
+            http_status_reason(response->status)
+        );
+        strbuf_append(&buf, status_line);
+
+
+        /* Headers from map */
+        for (int i = 0; i < response->num_headers; i++) {
+            char* key = response->headers[i].key;
+            char* value = response->headers[i].value;
+
+            strbuf_append(&buf, key);
+            strbuf_append(&buf, ": ");
+            strbuf_append(&buf, value);
+            strbuf_append(&buf, "\r\n");
+        }
+
+        // content length
+        strbuf_append(&buf, "Content-Length: ");
+        char c_length[32];
+        snprintf(c_length, 32, "%d", response->content_length);
+        strbuf_append(&buf, c_length);
+        strbuf_append(&buf, "\r\n");
+
+        strbuf_append(&buf, "\r\n");
+
+
+        // add body
+        strbuf_append(&buf, response->body);
+
+
+        // SEND response
+        // printf("Response: \n\n%s\n", buf.data);
+        tcp_send(request->socket, buf.data, buf.len);
+
+        repsonse_cleanup:
+            free(buf.data);
+    }
+
     static void *worker_thread(void *arg) {
-        ThreadWorkerData *data = (ThreadWorkerData *)arg;
-        CServer *server = (CServer *)data->data;
+        ThreadWorkerData *worker_data = (ThreadWorkerData *)arg;
+        CServer *server = (CServer *)worker_data->data;
 
         while (1) {
 
@@ -2025,7 +2121,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             }
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
-                logf(INFO, "-- Worker thread %d shutting down", data->thread_id);
+                logf(INFO, "-- Worker thread %d shutting down", worker_data->thread_id);
                 pthread_exit(NULL);
             }
             OpenSocket* request = NULL;
@@ -2048,17 +2144,20 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
 
 
             // RATE limit based on ip
+            Response* response = malloc(sizeof(Response));
             pthread_mutex_lock(&server->security_data_lock);
-            // printf("Thread %d lock rate limit\n", data->thread_id);
-            int should_limit = server->rate_limiter(ip_address, port, server);
-            // printf("Thread %d unlock rate limit\n", data->thread_id);
+            SecurityResult* result = server->rate_limiter(ip_address, port, server->security_data);
             pthread_mutex_unlock(&server->security_data_lock);
-            if (should_limit) {
-                goto close_connection;
+            if (result->request_failed_security) {
+                free_response(response);
+                response = result->response;
+                result->response = NULL;
+                goto send_and_close_connection;
             }
+            free_security_result(result);
 
 
-            // READ message
+            // PARSE REQUEST
             ptr_array headers; 
             headers.data = malloc(sizeof(HttpHeader) * 8);
             headers.capacity = 8;
@@ -2066,128 +2165,161 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             int num_headers = 0;
             char *path = malloc(sizeof(char)*1024);
             char *body = malloc(1);
-            int buffer_len = server->max_request_size_mb * 1000;
+            int buffer_len = server->max_request_size_kb * 1000;
             char* buffer = malloc(sizeof(char) * buffer_len);
-            int bytes_recieved = tcp_receive(server->tcp_socket, request->socket, buffer, buffer_len);
-            if (bytes_recieved == buffer_len) {
-                char message[1024];
-                snprintf(message, 1024, "Message exceeded max request size of %dmb", server->max_request_size_mb);
-                log(message, ERROR);
-                goto cleanup;
-            }
-
-
-            // PARSE REQUEST
 
             /* 1. Find header/body boundary */
+            int bytes_recieved = tcp_receive(server->tcp_socket, request->socket, buffer, C_SERVER_MIN_READ);
             char *headers_end = strstr(buffer, "\r\n\r\n");
-            if (!headers_end) continue;
+            while(!headers_end && bytes_recieved < server->max_header_and_path_size_kb) {
+                int bytes_to_read = buffer_len - bytes_recieved;
+                if (bytes_to_read > C_SERVER_MIN_READ) bytes_to_read = C_SERVER_MIN_READ;
+                bytes_recieved += tcp_receive(server->tcp_socket, request->socket, buffer + bytes_recieved, C_SERVER_MIN_READ);
+                headers_end = strstr(buffer, "\r\n\r\n");
+            }
 
-            *headers_end = '\0';
-            char *body_start = headers_end + 4;
+            // return if request is badly formatted
+            if (!headers_end) {
+                log(ERROR, "Badly formatted http request missing \\r\\n\\r\\n to signal start of body");
+                response->status = HTTP_BAD_REQUEST;
+                response->body = strdup("Badly formatted http request missing \\r\\n\\r\\n to signal start of body");
+                response->content_length = strlen(response->body);
+                goto cleanup;
+            }
+            // otherwise process request
+            else {
 
-            /* 2. Parse request line */
-            char *line_end = strstr(buffer, "\r\n");
-            if (!line_end) continue;
-            *line_end = '\0';
+                *headers_end = '\0';
+                char *body_start = headers_end + 4;
 
-            char method[8], version[16];
-            sscanf(buffer, "%7s %1023s %15s", method, path, version);
+                /* 2. Parse request line */
+                char *line_end = strstr(buffer, "\r\n");
+                if (!line_end) {
+                    log(ERROR, "Badly formatted http request missing request line before headers");
+                    response->status = HTTP_BAD_REQUEST;
+                    response->body = strdup("Badly formatted http request missing request line before headers");
+                    response->content_length = strlen(response->body);
+                    goto cleanup;
+                }
+                *line_end = '\0';
 
-            /* 3. Parse headers */
-            int content_length = 0;
-            char *line = line_end + 2;
-            while (line && *line) {
-                char *next = strstr(line, "\r\n");
-                if (next) *next = '\0';
+                char method[8], version[16];
+                sscanf(buffer, "%7s %1023s %15s", method, path, version);
 
-                char *colon = strchr(line, ':');
-                if (colon) {
-                    *colon = '\0';
-                    char *key = trim(line);
-                    char *value = trim(colon + 1);
+                /* 3. Parse headers */
+                int content_length = 0;
+                char *line = line_end + 2;
+                while (line && *line) {
+                    char *next = strstr(line, "\r\n");
+                    if (next) *next = '\0';
 
-                    if (strcmp(key, "Content-Length")) {
-                        int len = atoi(value);
+                    char *colon = strchr(line, ':');
+                    if (colon) {
+                        *colon = '\0';
+                        char *key = trim(line);
+                        char *value = trim(colon + 1);
+
+                        if (strcmp(key, "Content-Length")) {
+                            int len = atoi(value);
+                        }
+                        
+                        HttpHeader* header = malloc(sizeof(HttpHeader));
+                        header->key = strdup(key);
+                        header->value = strdup(value);
+                        ptr_array_push(&headers, header);
+                        ++num_headers;
                     }
-                    
-                    HttpHeader* header = malloc(sizeof(HttpHeader));
-                    header->key = strdup(key);
-                    header->value = strdup(value);
-                    ptr_array_push(&headers, header);
-                    ++num_headers;
+                    else {
+                        log(ERROR, "Badly formatted header");
+                        response->status = HTTP_BAD_REQUEST;
+                        response->body = strdup("Badly formatted header");
+                        response->content_length = strlen(response->body);
+                        goto cleanup;
+                    }
+
+                    if (!next) break;
+                    line = next + 2;
                 }
 
-                if (!next) break;
-                line = next + 2;
+                // scan headers for header safety
+                Map* header_type_counts = new_map();
+                for (int n = 0; n < num_headers; ++n) {
+                    HttpHeader* header = headers.data[n];
+
+                    // prevent duplicates
+                    if (m_contains(header_type_counts, header->key)) {
+                        free_map(header_type_counts, 0);
+                        log(ERROR, "Duplicate header");
+                        response->status = HTTP_BAD_REQUEST;
+                        response->body = strdup("Duplicate header");
+                        response->content_length = strlen(response->body);
+                        goto cleanup;
+                    }
+                    m_put(header_type_counts, header->key, "", 1);
+                    
+                    // prevent CL/LF characters
+                    for (const char* p = header->value; *p; p++) {
+                        if (*p == '\r' || *p == '\n') {
+                            free_map(header_type_counts, 0);
+                            log(ERROR, "Badly formatted header");
+                            response->status = HTTP_BAD_REQUEST;
+                            response->body = strdup("Badly formatted header");
+                            response->content_length = strlen(response->body);
+                            goto cleanup;
+                        }
+                    }
+                }
+                free_map(header_type_counts, 0);
+
+                // log request
+                logf(INFO, "Request too: [%s] %s (worker %d)", method, path, worker_data->thread_id);
+
+                // CALL USER SECURITY METHOD
+                pthread_mutex_lock(&server->security_data_lock);
+                result = server->security_function(ip_address, port, method, headers.data, num_headers, path, server->security_data);
+                pthread_mutex_unlock(&server->security_data_lock);
+
+                // return early if security failed
+                if (result->request_failed_security) {
+                    logf(ERROR, "Failed security check");
+                    free_response(response);
+                    response = result->response;
+                    result->response = NULL;
+                    goto cleanup;
+                }
+                // otherwise process request
+                else {
+
+                    /* 4. Parse body */
+                    if (bytes_recieved % C_SERVER_MIN_READ == 0) {
+                        int bytes_to_read = buffer_len - bytes_recieved;
+                        bytes_recieved += tcp_receive(server->tcp_socket, request->socket, buffer + bytes_recieved, bytes_to_read);
+                    }
+                    // return if max request size is hit
+                    if (bytes_recieved >= buffer_len) {
+                        logf(ERROR, "Message exceeded max request size of %dmb", server->max_request_size_kb);
+                        response->status = HTTP_PAYLOAD_TOO_LARGE;
+                        goto cleanup;
+                    }
+                    // otherwise read body
+                    else {
+                        if (!content_length) {
+                            int header_length = body_start - buffer;
+                            content_length = bytes_recieved - header_length;
+                        }
+                        if (content_length) {
+                            body = realloc(body, content_length + 1);
+                            memcpy(body, body_start, content_length);
+                            body[content_length] = '\0';
+                        }
+
+                        // CALL USER DEFINED HANDLER
+                        server->handler_function(response, method, headers.data, num_headers, path, body);
+                
+                    }
+
+                }
             }
-
-            /* 4. Parse body */
-            if (!content_length) {
-                int header_length = body_start - buffer;
-                content_length = bytes_recieved - header_length;
-            }
-            if (content_length) {
-                body = realloc(body, content_length + 1);
-                memcpy(body, body_start, content_length);
-                body[content_length] = '\0';
-            }
-
-
-
-            // CALL USER DEFINED HANDLER
-            Response response = server->handler_function(method, headers.data, num_headers, path, body);
-            
-            
-            // CONVERT RESPONSE TO HTTP RESPONSE
-            strbuf buf;
-            strbuf_init(&buf, response.content_length + 4096);
-
-            /* Status line */
-            char status_line[1024];
-            snprintf(
-                status_line,
-                1024,
-                "HTTP/1.1 %d %s\r\n",
-                response.status,
-                http_status_reason(response.status)
-            );
-            strbuf_append(&buf, status_line);
-
-
-            /* Headers from map */
-            for (int i = 0; i < response.num_headers; i++) {
-                char* key = response.headers[i].key;
-                char* value = response.headers[i].value;
-
-                strbuf_append(&buf, key);
-                strbuf_append(&buf, ": ");
-                strbuf_append(&buf, value);
-                strbuf_append(&buf, "\r\n");
-            }
-
-            // content length
-            strbuf_append(&buf, "Content-Length: ");
-            char c_length[32];
-            snprintf(c_length, 32, "%d", response.content_length);
-            strbuf_append(&buf, c_length);
-            strbuf_append(&buf, "\r\n");
-
-            strbuf_append(&buf, "\r\n");
-
-
-            // add body
-            strbuf_append(&buf, response.body);
-
-
-
-            // SEND response
-            printf("Response: \n\n%s\n", buf.data);
-            tcp_send(request->socket, buf.data, buf.len);
-
-
-            repsonse_cleanup:
-                free(buf.data);
             
             cleanup:
                 free_headers(headers.data, headers.length);
@@ -2195,30 +2327,75 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
                 free(body);
                 free(buffer);
 
-            close_connection:
-                tcp_close_connection(request->socket);
+
+            send_and_close_connection:
+                    
+                // CONVERT RESPONSE TO HTTP RESPONSE AND SEND
+                send_response(server, request, response);
+
+                // close connection
+                tcp_send_and_close_connection(request->socket);
+                free_security_result(result);
+                free_response(response);
                 free(request);
         }
     }
-    
 
+    /**
+     * Creates a http server
+     * 
+     * You should provide this function with a method reference that will process incoming requests. This function should modify the 
+     * provided Response* object. Any string set for the response body should be on the heap or set to NULL as they will
+     * be cleaned up. (If literals are used then a crash will occur)
+     * 
+     * Security data is whatever data you need in your 'rate_limiter' function and 'security_function' functions. You can use some provided 
+     * defaults for those function or define your own. Use 'defualt_rate_limiter' defined in the file for a basic ip address based rate limiter. You'll need to 
+     * pass in a 'DefaultSecurityData*' object as 'securitiy_data' if you use this function. We also provide a default for the security function in this
+     * file but it is a no action pass through.
+     * 
+     * For any publicly available server, we recommend defining the security functions with the following features:
+     * - ip address rate limiting
+     * - session rate limiting (after login if applicable)
+     * - authorization on sensitive endpoints (session token, CSRF cookie)
+     *      + invalidate tokens after some time
+     *      + validate and parse cookies (if applicable)
+     *      + set matching CSRF token and cookie (HttpOnly, Secure, and SameSite) and check against each other (catches attackers tricking the browser to send login tokens for your site from another site)
+     * - limit requests to defined resources (especially with paths to files)
+     * - max request size per resource
+     * - timeout per resource
+     * 
+     * And then in your 'handler_function'
+     * - content type validation (validate type and parse requests to prevent injection)
+     * - escape or parameterize user input to prevent SQL, JS, or other injection attacks
+     * 
+     * 
+     * The server will provide the following security features:
+     * - enforce max request and header/path sizes preventing DOS attacks if 'max_request_size_kb' and 'max_header_and_path_size_kb' is set well
+     * - prevent duplicate headers and headers with CR/LF tokens
+     * - enforce request timeouts
+     * - prevent malformed http requests
+     */
     CServer* c_server_start_http_options(
         int port, 
         int timeout_ms, 
-        int max_request_size_mb, 
+        int max_header_and_path_size_kb, 
+        int max_request_size_kb, 
         int threads, 
-        Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body),
-        int (*rate_limiter)(char* ip_address, int port, CServer* server),
+        void (*handler_function)(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body),
+        SecurityResult* (*rate_limiter)(char* ip_address, int port, void* security_data),
+        SecurityResult* (*security_function)(char* ip_address, int port, char* method, HttpHeader* headers, int num_headers, char* path, void* security_data),
         void* security_data
     ) {
         CServer* server = malloc(sizeof(CServer));
         server->udp_socket = NULL;
         server->port = port;
         server->timeout_ms = timeout_ms;
-        server->max_request_size_mb = max_request_size_mb;
+        server->max_header_and_path_size_kb = max_header_and_path_size_kb;
+        server->max_request_size_kb = max_request_size_kb;
         server->num_threads = threads;
         server->security_data = security_data;
         server->rate_limiter = rate_limiter;
+        server->security_function = security_function;
         server->handler_function = handler_function;
         server->shutdown = 0;
         server->requests = new_list();
@@ -2246,25 +2423,45 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         return server;
     }
 
-    CServer* c_server_start_http(int port, Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
+    /**
+     * Creates a basic http server
+     * 
+     * You should provide this function with a method reference that will process incoming requests. This function should modify the 
+     * provided Response* object. Any string set for the response body should be on the heap or set to NULL as they will
+     * be cleaned up. (If literals are used then a crash will occur)
+     * 
+     * This methods has a few defaults 
+     * - an ip address rate limiter with a 1 min window allowing 50 requests per window
+     * - a timeout of 30 seconds
+     * - a max header/path size of 16 kb
+     * - a max request size of 256 kb
+     * - 8 worker threads
+     * 
+     * For more customization user 'c_server_start_http_options'.
+     * 
+     * *Note: security here is very basic. For important public servers, you should use 'c_server_start_http_options' and define security functions described there.
+     */
+    CServer* c_server_start_http(int port, void (*handler_function)(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
 
         DefaultSecurityData* sec_data = malloc(sizeof(DefaultSecurityData));
         sec_data->ip_address_to_requests_in_window = new_map();
-        sec_data->rate_limit_window_s = 1 * 60 * 1000;
-        sec_data->requests_per_window = 100;
+        sec_data->rate_limit_window_ms = 1 * 60 * 1000;
+        sec_data->requests_per_window = 50;
 
         return c_server_start_http_options(
             port,
             30000,
-            50,
+            16,
+            256,
             8,
             handler_function,
             defualt_rate_limiter,
+            default_security_function,
             sec_data
         );
     }
 
-    CServer* cweb_start_udp(int port, int timeout_ms, int max_request_size_mb, int threads, Response (*handler_function)(char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
+    CServer* cweb_start_udp(int port, int timeout_ms, int max_request_size_kb, int threads, Response (*handler_function)(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body)) {
 
     }
 

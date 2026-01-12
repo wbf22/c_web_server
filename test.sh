@@ -1,1 +1,1 @@
-curl -X POST localhost:8080 -d "hi"
+curl -X POST localhost:8080 -d "hi" -i

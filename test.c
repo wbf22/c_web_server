@@ -29,21 +29,14 @@ void assert(int condition, char* message) {
 
 
 
-Response handler_function(char* method, HttpHeader* headers, int num_headers, char* path, char* body) {
-
+void handler_function(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body) {
 
     char* res_body = "hi man";
 
-    Response res = {
-        HTTP_OK,
-        "",
-        NULL,
-        0,
-        res_body,
-        strlen(res_body)+1
-    };
-
-    return res;
+    response->status = HTTP_OK;
+    response->headers = NULL;
+    response->num_headers = 0;
+    response->body = strdup(res_body);
 }
 
 int main() {

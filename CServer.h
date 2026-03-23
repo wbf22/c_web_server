@@ -2121,8 +2121,8 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             }
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
-                free(worker_data);
                 logf(INFO, "-- Worker thread %d shutting down", worker_data->thread_id);
+                free(worker_data);
                 pthread_exit(NULL);
             }
             OpenSocket* request = NULL;
@@ -2523,6 +2523,8 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         if (server->udp_socket != NULL) {
             close(server->udp_socket->socket_num);
         }
+        
+        logf(INFO, "Server Shutdown");
         server->shutdown_done = 1;
     }
 

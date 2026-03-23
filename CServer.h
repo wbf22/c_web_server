@@ -1819,6 +1819,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         pthread_mutex_t lock;
         pthread_cond_t notify;
         int shutdown;
+        int shutdown_done;
         List* requests;
 
         // security 
@@ -1963,10 +1964,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         if (server->udp_socket != NULL)
             udp_clean_up_socket(server->tcp_socket);
 
-        free(server->socket_thread);
-        for (int i = 0; i < server->num_threads; i++) {
-            free(server->threads[i]);
-        }
+        // thread created with pthread_create don't need to freed 
         free(server->threads);
 
         free_list(server->requests, 1);
@@ -2030,12 +2028,11 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         server->tcp_socket = tcp_make_socket(server->timeout_ms);
         tcp_server_init(server->tcp_socket, server->port);
         
-        int buffer_len = server->max_request_size_kb * 1000;
-        char* buffer = malloc(sizeof(char) * buffer_len);
+        OpenSocket* request;
         while(!server->shutdown) {
 
             // accept connection
-            OpenSocket* request = malloc(sizeof(OpenSocket));
+            request = malloc(sizeof(OpenSocket));
             request->socket = tcp_accept_connection(server->tcp_socket, &request->client);
             if (request->socket == -1) continue;
 
@@ -2044,13 +2041,14 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             // printf("Main thread got lock\n");
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
-                free(request);
                 break;
             }
             l_push(server->requests, request);
             pthread_cond_signal(&server->notify);
             pthread_mutex_unlock(&server->lock);
+
         }
+        free(request);
 
     }
 
@@ -2123,6 +2121,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
             }
             if (server->shutdown) {
                 pthread_mutex_unlock(&server->lock);
+                free(worker_data);
                 logf(INFO, "-- Worker thread %d shutting down", worker_data->thread_id);
                 pthread_exit(NULL);
             }
@@ -2402,6 +2401,7 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         server->security_function = security_function;
         server->handler_function = handler_function;
         server->shutdown = 0;
+        server->shutdown_done = 0;
         server->requests = new_list();
 
         server->threads = malloc(sizeof(pthread_t) * threads);
@@ -2518,11 +2518,12 @@ void l_sort(List* list, int (* _Nonnull __compar)(const void *, const void *)) {
         pthread_cond_destroy(&server->notify);
 
         if (server->tcp_socket != NULL) {
-            tcp_clean_up_socket(server->tcp_socket);
+            close(server->tcp_socket->socket_num);
         }
         if (server->udp_socket != NULL) {
-            udp_clean_up_socket(server->udp_socket);
+            close(server->udp_socket->socket_num);
         }
+        server->shutdown_done = 1;
     }
 
 

@@ -28,6 +28,7 @@ void assert(int condition, char* message) {
 }
 
 
+CServer* server;
 
 void handler_function(Response* response, char* method, HttpHeader* headers, int num_headers, char* path, char* body) {
 
@@ -37,18 +38,34 @@ void handler_function(Response* response, char* method, HttpHeader* headers, int
     response->headers = NULL;
     response->num_headers = 0;
     response->body = strdup(res_body);
+
+
+    if (strcmp("hi", body) == 0) {
+        c_server_stop(server);
+    }
 }
+
+SecurityResult* security_function(char* ip_address, int port, char* method, HttpHeader* headers, int num_headers, char* path, void* security_data) {
+    SecurityResult* result = malloc(sizeof(SecurityResult));
+    result->request_failed_security = 0;
+
+    return result;
+}
+
 
 int main() {
 
-    CServer* server = c_server_start_http(8080, handler_function);
+    server = c_server_start_http(8080, handler_function, security_function, NULL);
 
-    unsigned int left = sleep(60 * 5);
-    while(left > 0) {
-        left = sleep(left);
+    while(!server->shutdown) {
+        sleep(2);
     }
 
-    c_server_stop(server);
+    while(!server->shutdown_done) {
+        sleep(1);
+    }
+
+    c_server_free(server);
     
     return 0;
 }

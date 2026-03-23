@@ -1,0 +1,3 @@
+[
+    "This is a repo for a web server library in C. We tend to prefer using header files when possible to make things easier to include for library users"
+]
